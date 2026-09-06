@@ -2,122 +2,161 @@
 
 ## Current status
 
-Repository started from empty. The first specification pass is complete enough to hand to a hackathon-permitted Gemini implementation session.
+The repository now has a concrete judge-ready vertical-slice contract in addition to the product/architecture specification. The project is ready for a hackathon-permitted Gemini implementation session to prove sponsor integration before broader UI/video work.
 
 ## Inspected this run
 
-- Repository state: completely empty at start.
-- Official Agentic Cinema overview/rules and current schedule.
-- Official ClickHouse track requirement: runtime use of ClickHouse through the official `mcp-clickhouse` server connected to ClickHouse Cloud or self-hosted ClickHouse.
-- Official `ClickHouse/mcp-clickhouse` README and security defaults.
-- ClickHouse “Agentic Data Stack” architecture/pattern.
-- Current Gemini Enterprise Agent Platform / ADK Agent Runtime quickstart.
+- Read the existing `progress.md` completely before making changes.
+- Re-read `README.md` and `ARCHITECTURE.md` to avoid duplicating prior work.
+- Re-checked the current official `ClickHouse/mcp-clickhouse` repository.
+- Verified current official MCP behavior relevant to deployment: `run_query`, `list_databases`, `list_tables`, read-only-by-default query mode, authenticated HTTP/SSE transports by default, and a network health endpoint.
+- Checked current Google Gemini Enterprise documentation for connecting MCP-compatible endpoints and exposing MCP tools to Gemini agent/workflow steps.
+- Reviewed current ClickHouse agent/MCP ecosystem references to keep the design aligned with ClickHouse's agentic data positioning.
 
-## Files created
+## Changes made this run
 
-### `README.md`
-Established:
-- product thesis and target users;
-- primary workflows;
-- why ClickHouse is indispensable;
-- MVP logical entities;
-- evidence/confidence contract;
-- security model;
-- 3-minute judge demo;
-- real-world onboarding vision;
-- MVP boundaries and success metrics;
-- current authoritative source links.
+### Created `VERTICAL_SLICE_SPEC.md`
+Locked the smallest end-to-end workflow that should be implemented first:
 
-### `ARCHITECTURE.md`
-Established:
-- system/component boundaries;
-- separation of ingestion write path from MCP read path;
-- proposed ClickHouse logical schema;
-- continuity and editorial-retrieval workflows;
-- state ownership boundaries;
-- minimum viable security;
-- Google Cloud deployment topology;
-- deterministic demo dataset;
-- failure behavior;
-- judge-visible technical proof;
-- implementation order designed to de-risk the ClickHouse track requirement first.
+**Gemini request → official ClickHouse MCP → real ClickHouse production memory → evidence-backed continuity comparison → human uncertainty resolution → second MCP-backed editorial retrieval query.**
 
-## Key decisions
+The new spec defines:
+- deterministic fictional production (`Glass House`);
+- exact Scene 28 baseline/current-take facts;
+- expected continuity findings;
+- four retrieval candidates and the exact expected editorial-query result;
+- minimum data contract;
+- ClickHouse physical-design guidance without prematurely generating submitted SQL/code;
+- official MCP security/runtime contract;
+- four initial agent intents;
+- rule that production facts must be re-read through ClickHouse MCP rather than trusted from conversational memory;
+- continuity confidence/uncertainty behavior;
+- human-in-the-loop contract;
+- judge-visible agent activity requirements;
+- six pass/fail acceptance gates;
+- multimodal extraction expansion order;
+- target deployment topology;
+- exact 3-minute demo choreography;
+- post-hackathon real-user onboarding path;
+- one exact next implementation action.
 
-1. **Product direction remains TakeKeeper:** a production-memory + continuity agent, not a generic video chatbot or AI editor.
-2. **ClickHouse is the durable production memory.** Raw video stays in object storage; ClickHouse stores structured facts/events/references.
-3. **Official ClickHouse MCP is the Gemini agent's analytical read path.** This directly satisfies the track's core runtime requirement.
-4. **Ingestion writes are separated from MCP.** The official MCP is read-only by default; TakeKeeper should preserve that safer default and use a dedicated backend credential/service for inserts.
-5. **Evidence-first UX.** Every continuity warning should point to exact evidence timestamps and confidence, not just produce a score.
-6. **Human-in-the-loop is mandatory for uncertainty.** Low-confidence/subjective perception must be confirmable/rejectable and audited.
-7. **MVP hero workflow is deliberately narrow:** analyze/register a new take → query historical baseline through MCP → identify a few obvious continuity mismatches → human resolve → run one natural-language editorial retrieval query.
-8. **Implementation order de-risks sponsor integration before multimodal polish.** First prove Gemini → official MCP → ClickHouse → useful answer over seeded observations; only then add automated video extraction.
-9. **No OpenAI-generated submitted implementation artifacts.** This repo currently contains only research/specification material for later implementation with hackathon-permitted Google/partner tooling.
+### Updated `README.md`
+- Linked `VERTICAL_SLICE_SPEC.md` as the concrete implementation contract.
+- Added the current Gemini Enterprise MCP workflow documentation to source references.
+- Clarified that implementation should use the vertical-slice gate sequence before expanding scope.
 
-## Important current facts
+## Key decisions now locked
 
-- The hackathon submission deadline is **September 9, 2026 at 2:00 PM PDT** according to the current Devpost schedule.
-- ClickHouse track rules require active runtime use of the official MCP server; README-only references do not satisfy the goal.
-- Current official `mcp-clickhouse` supports query/schema tools and defaults to read-only queries; network transports require authentication by default.
-- Current Google Agent Runtime documentation supports deploying ADK-built agents to managed Agent Runtime / Agent Platform resources.
-- Devpost guidance says the demo video is a backstop if cloud credits later expire, so the final recording must capture the complete working end-to-end flow.
+1. **Do not start with video upload or extraction.** First prove the real Gemini/ADK → official ClickHouse MCP → ClickHouse loop against deterministic seeded data.
+2. **Hero demo production is fixed:** `Glass House`, Scene 28, baseline `S28-T31`, current take `S28-T47`.
+3. **Hero continuity differences are fixed:** mug hand `right → left`, jacket `zipped → open`, and intentionally uncertain lamp state.
+4. **Hero retrieval query is fixed:** Maya says “I’m leaving”, looks toward the door afterward, boom not visible, rating ≥4. Expected results are `S28-T31` and `S28-T47` only.
+5. **MCP remains read-only.** Human-resolution/ingestion writes use a separate backend credential/path.
+6. **Production-state answers require a fresh ClickHouse MCP read.** Conversation/session memory is not authoritative production truth.
+7. **No opaque continuity score.** Findings expose baseline, observed value, evidence, confidence, verification state and status.
+8. **Missing observations are `insufficient_evidence`, not continuity mismatches.**
+9. **Judge-visible tool activity is required.** The UI should expose safe tool name/query-purpose/row-count/latency stages without secrets or hidden chain-of-thought.
+10. **Multimodal extraction is an expansion after sponsor compliance passes.** Replace seeded observations incrementally with real Gemini extraction and keep only reliably detectable continuity properties.
+
+## Acceptance gates for implementation
+
+### Gate A — Sponsor integration
+A real Gemini/ADK agent makes a real runtime call through official `ClickHouse/mcp-clickhouse` to a real ClickHouse service and uses the returned fact in its answer.
+
+### Gate B — Continuity correctness
+`S28-T47` produces mug-hand + jacket mismatches while lamp remains uncertain rather than asserted as fact.
+
+### Gate C — Evidence
+Every continuity finding references its baseline and evidence timestamp/frame window.
+
+### Gate D — Editorial retrieval
+The fixed query returns `S28-T31` and `S28-T47`, excluding the two deliberately invalid candidates for explicit reasons.
+
+### Gate E — Failure honesty
+If ClickHouse/MCP is unavailable or has no supporting data, the agent fails visibly and does not fabricate production history.
+
+### Gate F — Security
+MCP is read-only and no ClickHouse/MCP credentials reach the browser.
+
+Do not spend significant time on automatic video extraction or visual polish until A–F pass.
+
+## Important current technical facts
+
+- The official `ClickHouse/mcp-clickhouse` server currently implements MCP `2026-07-28` while retaining compatibility with older initialization handshakes.
+- Its core ClickHouse tools include `run_query`, `list_databases`, and `list_tables`.
+- Query execution is read-only by default unless write access is explicitly enabled.
+- HTTP/SSE network modes require authentication by default; static bearer token and OAuth/OIDC modes are supported.
+- The official server exposes `/health` for network deployment readiness checks.
+- Current Gemini Enterprise Workflow Builder documentation supports connecting MCP-compatible endpoints and adding MCP tools to Gemini agent steps.
+- The hackathon submission deadline remains **September 9, 2026 at 2:00 PM PDT / September 10, 2026 at 2:30 AM IST** based on the current Devpost schedule previously inspected.
 
 ## Risks / unresolved blockers
 
-1. **No implementation exists yet.** The repository is specification-only by design.
-2. **No demo footage/dataset exists.** A small fictional/self-created continuity dataset must be produced quickly.
-3. **Exact physical ClickHouse schema is not frozen.** Logical tables are defined, but engine/ORDER BY/partition decisions should be validated using current ClickHouse Agent Skills and measured query patterns during implementation.
-4. **Gemini multimodal extraction schema needs empirical validation.** It is unknown which visual continuity properties can be extracted reliably enough for the demo; choose visually obvious ones first.
-5. **Exact MCP-to-Gemini Agent Platform connection mechanism needs an implementation spike.** The core requirement is clear, but current SDK/runtime wiring should be verified with official docs in the permitted coding environment.
-6. **License file is still missing.** Hackathon submission requires a public open-source repository/license; choose and add the desired license before submission.
-7. **Hosted UI/deployment details are still open.** Keep them minimal until MCP + ClickHouse + Gemini read loop is proven.
+1. **No submitted implementation exists yet** by design; code must be produced with hackathon-permitted Google/partner tooling.
+2. **Gate A is still unproven:** exact deployed Gemini/ADK ↔ official ClickHouse MCP connection/auth method must be tested in the implementation environment.
+3. **No real ClickHouse service/demo database is provisioned yet.**
+4. **No demo footage exists.** The seeded data contract is fixed, but self-created/authorized clips are still needed for the multimodal expansion.
+5. **Physical ClickHouse engines/ORDER BY/partition choices are not frozen.** Validate against real query patterns and current ClickHouse best practices during implementation.
+6. **Gemini extraction reliability is unknown** for some visual properties; start with obvious mug-hand/jacket/lamp/boom/eyeline states and measure against labels.
+7. **License file is still missing.** The public submission requires an open-source license; choose/add it before final submission.
+8. **Hosted UI, API service and MCP endpoint do not exist yet.** Keep these minimal until Gate A works.
 
 ## Highest-priority implementation backlog
 
-### P0 — prove track compliance
-- Create ClickHouse Cloud/self-hosted service.
-- Create minimal `takes`, `observations`, `continuity_baselines` demo schema.
-- Seed one scene with 3–4 takes and known ground truth.
-- Run official `ClickHouse/mcp-clickhouse` securely.
-- Connect Gemini/ADK agent to MCP.
-- Demonstrate one agent request that queries ClickHouse and returns the correct continuity difference.
+### P0 — Gate A only
+- Provision a minimal ClickHouse service/database.
+- Create the smallest schema required for one production fact.
+- Seed one known production fact.
+- Run official `ClickHouse/mcp-clickhouse` with authentication and read-only access.
+- Connect a Gemini/ADK agent using hackathon-permitted Google tooling.
+- Ask for the known production fact and verify that the response demonstrably came through the MCP tool path.
+- Record exact connection method, authentication mode, observed MCP tool payload shape, returned row count and latency here.
 
-### P0 — freeze deterministic demo
-- Record/create 6–12 very short fictional takes.
-- Seed obvious differences: mug hand, jacket state, lamp state, dialogue/eyeline variant.
-- Define expected outputs for each take.
+### P0 — Gates B–D
+- Seed the full `Glass House` Scene 28 fixture defined in `VERTICAL_SLICE_SPEC.md`.
+- Implement continuity comparison behavior.
+- Implement evidence-backed findings.
+- Implement the fixed editorial retrieval query and verify exact expected take IDs.
 
-### P1 — product shell
-- Production console with take list, processing state, continuity compare view, finding/evidence cards, ask-production input, and minimal agent-activity drawer.
+### P0 — Gates E–F
+- Verify MCP/database outage behavior.
+- Verify zero fabrication on empty result.
+- Verify browser contains no database/MCP credentials.
+- Keep MCP write access disabled.
 
-### P1 — ingestion/extraction
-- Upload/register media to private object storage.
-- Gemini multimodal extraction to strict structured observations.
-- Validate output and write observations via backend ingestion credential.
+### P1 — Product shell
+- Take list + processing state.
+- Continuity compare/findings view.
+- Evidence viewer.
+- Human confirm/reject action.
+- Ask-production input.
+- Safe agent-activity drawer.
 
-### P1 — human resolution
-- Confirm/reject uncertain findings.
-- Persist decision/audit trail.
+### P1 — Multimodal expansion
+- Create short self-owned demo clips matching the fixed fixture.
+- Gemini multimodal extraction into the strict observation contract.
+- Compare extraction against ground truth before enabling a property in the judge flow.
 
-### P2 — evaluation + polish
-- Fixed retrieval query suite.
-- Continuity precision/false-positive check.
-- Failure states for MCP/database/media issues.
-- Final 3-minute demo recording.
-- Deployment/run instructions and license.
+### P2 — production readiness / submission
+- Failure-state UX.
+- Evaluation matrix and latency measurements.
+- Hosted deployment/runbook.
+- Public license.
+- README setup/test instructions.
+- Deterministic 3-minute recording showing genuine Google Cloud + ClickHouse runtime use.
 
 ## Single best next step
 
-**Use Gemini CLI / Gemini Code Assist to implement the smallest possible vertical slice that proves `Gemini agent → official ClickHouse MCP → ClickHouse query → evidence-backed continuity answer` against a tiny manually seeded dataset. Do not start with video upload or UI polish.**
+**Using Gemini CLI / Gemini Code Assist or another hackathon-permitted Google/partner implementation tool, pass Gate A only: prove one real Gemini/ADK runtime call through the official authenticated, read-only ClickHouse MCP server to a real ClickHouse service and return one seeded production fact correctly.**
 
-Once that vertical slice works, update this file with the exact MCP connection method, working schema, query/tool traces, latency, and any changes needed to the architecture.
+Before doing anything else, update this file with the exact MCP connection/auth method, tool request/response shape, latency, and any runtime limitation discovered. That evidence determines the rest of the implementation architecture.
 
 ## Sources
 
 - https://agentic-cinema.devpost.com/
 - https://agentic-cinema.devpost.com/rules
 - https://agentic-cinema.devpost.com/details/dates
-- https://agentic-cinema.devpost.com/forum_topics/44701-how-will-judges-test-projects-after-cloud-credits-expire
 - https://github.com/ClickHouse/mcp-clickhouse
 - https://clickhouse.com/blog/the-agentic-data-stack
-- https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime/quickstart-adk
+- https://docs.cloud.google.com/gemini/enterprise/docs/workflow-builder/connect-mcp-servers
+- https://docs.cloud.google.com/gemini-enterprise-agent-platform/
