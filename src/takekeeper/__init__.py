@@ -19,6 +19,7 @@ from .review import (
     ReviewDecisionStore,
     stable_finding_id,
 )
+from .review_api import ReviewHttpApp, ReviewerIdentityProvider, StaticBearerIdentityProvider
 from .service import TakeAnalysisService
 
 __all__ = [
@@ -38,6 +39,9 @@ __all__ = [
     "ProductionMemory",
     "ReviewDecision",
     "ReviewDecisionStore",
+    "ReviewHttpApp",
+    "ReviewerIdentityProvider",
+    "StaticBearerIdentityProvider",
     "TakeAnalysisService",
     "compare_observations",
     "stable_finding_id",
