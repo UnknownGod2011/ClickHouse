@@ -4,6 +4,7 @@ import unittest
 
 from takekeeper.clickhouse_memory import ClickHouseProductionMemory
 from takekeeper.models import Finding, Observation
+from takekeeper.review import stable_finding_id
 
 
 class Result:
@@ -59,6 +60,14 @@ class ClickHouseProductionMemoryTests(unittest.TestCase):
             memory.replace_findings(production_id="glass-house", scene_id="S28", take_id="S28-T47", findings=[finding])
         self.assertEqual([], client.commands)
         self.assertEqual([], client.inserts)
+
+    def test_replace_findings_uses_stable_finding_identity(self):
+        client = FakeClient()
+        memory = ClickHouseProductionMemory(client)
+        finding = Finding(production_id="glass-house", scene_id="S28", take_id="S28-T47", entity_id="maya", property_key="prop.mug_hand", baseline_value="left", observed_value="right", confidence=0.98, status="mismatch", evidence_start_ms=100, evidence_end_ms=900, baseline_source_take_id="S28-T31")
+        memory.replace_findings(production_id="glass-house", scene_id="S28", take_id="S28-T47", findings=[finding])
+        inserted = client.inserts[0][1][0]
+        self.assertEqual(stable_finding_id(finding), inserted[3])
 
     def test_replace_findings_allows_nullable_failure_honesty_fields(self):
         client = FakeClient()
