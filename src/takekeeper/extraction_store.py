@@ -75,6 +75,11 @@ def observation_record_id(run_id: str, item: ExtractedObservation) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
+def _dedup_token(kind: str, production_id: str, record_id: str) -> str:
+    payload = f"takekeeper-extraction-v1\0{kind}\0{production_id}\0{record_id}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _validate_scope(request: TakeExtractionRequest, result: ExtractionRunResult) -> None:
     if not result.run_id.strip():
         raise ExtractionPersistenceError("run_id must be non-empty")
@@ -172,7 +177,27 @@ class InMemoryExtractionProvenanceStore:
 
 
 class ClickHouseExtractionProvenanceStore:
-    """Append-only ClickHouse persistence using the trusted application connection."""
+    """Append-only ClickHouse persistence using the trusted application connection.
+
+    The two provenance tables are not transactionally atomic. `append` is therefore a
+    reconciler: a retry may resume an identical partially persisted run, but it refuses
+    any existing row whose immutable payload differs from the retry payload. Each insert
+    also carries a deterministic ClickHouse deduplication token as a second line of
+    defense against acknowledgement-loss retries and concurrent identical attempts.
+    """
+
+    _RUN_COLUMNS = [
+        "production_id", "scene_id", "take_id", "run_id", "media_uri",
+        "media_fingerprint", "duration_ms", "extractor_model", "extractor_version",
+        "prompt_schema_version", "created_at",
+    ]
+    _OBSERVATION_COLUMNS = [
+        "production_id", "scene_id", "take_id", "run_id", "observation_id",
+        "entity_id", "property_key", "normalized_value", "raw_model_value",
+        "confidence", "evidence_start_ms", "evidence_end_ms", "source_type",
+        "visibility_state", "temporal_support", "disposition", "verification_state",
+        "evidence_rationale_short", "created_at",
+    ]
 
     def __init__(self, client: ClickHouseClientLike, *, database: str = "takekeeper") -> None:
         if not database.replace("_", "").isalnum():
@@ -183,48 +208,158 @@ class ClickHouseExtractionProvenanceStore:
     def _table(self, name: str) -> str:
         return f"{self._database}.{name}"
 
+    @staticmethod
+    def _run_payload(run: ExtractionRunRecord) -> tuple[Any, ...]:
+        return (
+            run.production_id, run.scene_id, run.take_id, run.run_id, run.media_uri,
+            run.media_fingerprint, run.duration_ms, run.extractor_model, run.extractor_version,
+            run.prompt_schema_version,
+        )
+
+    @staticmethod
+    def _observation_payload(row: ExtractedObservationRecord) -> tuple[Any, ...]:
+        return (
+            row.production_id, row.scene_id, row.take_id, row.run_id, row.observation_id,
+            row.entity_id, row.property_key, row.normalized_value, row.raw_model_value,
+            row.confidence, row.evidence_start_ms, row.evidence_end_ms, row.source_type,
+            row.visibility_state, row.temporal_support, row.disposition, row.verification_state,
+            row.evidence_rationale_short,
+        )
+
+    def _existing_run(self, *, production_id: str, run_id: str) -> ExtractionRunRecord | None:
+        result = self._client.query(
+            f"SELECT scene_id, take_id, media_uri, media_fingerprint, duration_ms, extractor_model, "
+            f"extractor_version, prompt_schema_version, created_at FROM {self._table('extraction_runs')} "
+            "WHERE production_id = {production_id:String} AND run_id = {run_id:String}",
+            parameters={"production_id": production_id, "run_id": run_id},
+        )
+        rows = list(result.result_set)
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ExtractionPersistenceError("run_id resolves to multiple provenance rows")
+        row = rows[0]
+        return ExtractionRunRecord(
+            run_id=run_id,
+            production_id=production_id,
+            scene_id=str(row[0]),
+            take_id=str(row[1]),
+            media_uri=str(row[2]),
+            media_fingerprint=str(row[3]),
+            duration_ms=int(row[4]),
+            extractor_model=str(row[5]),
+            extractor_version=str(row[6]),
+            prompt_schema_version=str(row[7]),
+            created_at=row[8],
+        )
+
+    def _existing_observation(
+        self, *, production_id: str, run_id: str, observation_id: str
+    ) -> ExtractedObservationRecord | None:
+        result = self._client.query(
+            f"SELECT scene_id, take_id, entity_id, property_key, normalized_value, raw_model_value, "
+            f"confidence, evidence_start_ms, evidence_end_ms, source_type, visibility_state, "
+            f"temporal_support, disposition, verification_state, evidence_rationale_short, created_at "
+            f"FROM {self._table('extracted_observations')} "
+            "WHERE production_id = {production_id:String} AND run_id = {run_id:String} "
+            "AND observation_id = {observation_id:String}",
+            parameters={
+                "production_id": production_id,
+                "run_id": run_id,
+                "observation_id": observation_id,
+            },
+        )
+        rows = list(result.result_set)
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ExtractionPersistenceError("observation_id resolves to multiple provenance rows")
+        row = rows[0]
+        return ExtractedObservationRecord(
+            run_id=run_id,
+            observation_id=observation_id,
+            production_id=production_id,
+            scene_id=str(row[0]),
+            take_id=str(row[1]),
+            entity_id=str(row[2]),
+            property_key=str(row[3]),
+            normalized_value=str(row[4]),
+            raw_model_value=str(row[5]),
+            confidence=float(row[6]),
+            evidence_start_ms=int(row[7]),
+            evidence_end_ms=int(row[8]),
+            source_type=str(row[9]),
+            visibility_state=str(row[10]),
+            temporal_support=str(row[11]),
+            disposition=str(row[12]),
+            verification_state=str(row[13]),
+            evidence_rationale_short=str(row[14]),
+            created_at=row[15],
+        )
+
     def append(self, request: TakeExtractionRequest, result: ExtractionRunResult) -> ExtractionRunRecord:
-        existing = self._client.query(
-            f"SELECT count() FROM {self._table('extraction_runs')} "
+        desired_run, desired_observations = _records(request, result, datetime.now(timezone.utc))
+
+        existing_run = self._existing_run(production_id=request.production_id, run_id=result.run_id)
+        if existing_run is None:
+            self._client.insert(
+                self._table("extraction_runs"),
+                [[*self._run_payload(desired_run), desired_run.created_at]],
+                column_names=self._RUN_COLUMNS,
+                settings={
+                    "insert_deduplicate": 1,
+                    "insert_deduplication_token": _dedup_token("run", request.production_id, result.run_id),
+                },
+            )
+            persisted_run = desired_run
+        else:
+            if self._run_payload(existing_run) != self._run_payload(desired_run):
+                raise ExtractionPersistenceError(
+                    "run_id already exists with different immutable provenance; refusing retry"
+                )
+            persisted_run = existing_run
+
+        desired_ids = {row.observation_id for row in desired_observations}
+        if len(desired_ids) != len(desired_observations):
+            raise ExtractionPersistenceError("extraction result produced duplicate observation identities")
+
+        for desired in desired_observations:
+            existing = self._existing_observation(
+                production_id=request.production_id,
+                run_id=result.run_id,
+                observation_id=desired.observation_id,
+            )
+            if existing is not None:
+                if self._observation_payload(existing) != self._observation_payload(desired):
+                    raise ExtractionPersistenceError(
+                        "observation_id already exists with different immutable provenance; refusing retry"
+                    )
+                continue
+            self._client.insert(
+                self._table("extracted_observations"),
+                [[*self._observation_payload(desired), desired.created_at]],
+                column_names=self._OBSERVATION_COLUMNS,
+                settings={
+                    "insert_deduplicate": 1,
+                    "insert_deduplication_token": _dedup_token(
+                        "observation", request.production_id, desired.observation_id
+                    ),
+                },
+            )
+
+        existing_ids_result = self._client.query(
+            f"SELECT observation_id FROM {self._table('extracted_observations')} "
             "WHERE production_id = {production_id:String} AND run_id = {run_id:String}",
             parameters={"production_id": request.production_id, "run_id": result.run_id},
         )
-        if existing.result_set and int(existing.result_set[0][0]) != 0:
-            raise ExtractionPersistenceError("run_id already exists; extraction history is append-only")
-
-        run, observations = _records(request, result, datetime.now(timezone.utc))
-        self._client.insert(
-            self._table("extraction_runs"),
-            [[
-                run.production_id, run.scene_id, run.take_id, run.run_id, run.media_uri,
-                run.media_fingerprint, run.duration_ms, run.extractor_model, run.extractor_version,
-                run.prompt_schema_version, run.created_at,
-            ]],
-            column_names=[
-                "production_id", "scene_id", "take_id", "run_id", "media_uri",
-                "media_fingerprint", "duration_ms", "extractor_model", "extractor_version",
-                "prompt_schema_version", "created_at",
-            ],
-        )
-        if observations:
-            self._client.insert(
-                self._table("extracted_observations"),
-                [[
-                    row.production_id, row.scene_id, row.take_id, row.run_id, row.observation_id,
-                    row.entity_id, row.property_key, row.normalized_value, row.raw_model_value,
-                    row.confidence, row.evidence_start_ms, row.evidence_end_ms, row.source_type,
-                    row.visibility_state, row.temporal_support, row.disposition,
-                    row.verification_state, row.evidence_rationale_short, row.created_at,
-                ] for row in observations],
-                column_names=[
-                    "production_id", "scene_id", "take_id", "run_id", "observation_id",
-                    "entity_id", "property_key", "normalized_value", "raw_model_value",
-                    "confidence", "evidence_start_ms", "evidence_end_ms", "source_type",
-                    "visibility_state", "temporal_support", "disposition", "verification_state",
-                    "evidence_rationale_short", "created_at",
-                ],
+        existing_ids = [str(row[0]) for row in existing_ids_result.result_set]
+        if len(existing_ids) != len(set(existing_ids)):
+            raise ExtractionPersistenceError("run contains duplicate persisted observation identities")
+        if set(existing_ids) != desired_ids:
+            raise ExtractionPersistenceError(
+                "run contains incomplete or unexpected persisted observations after reconciliation"
             )
-        return run
+        return persisted_run
 
     def list_runs(self, *, production_id: str, scene_id: str, take_id: str) -> list[ExtractionRunRecord]:
         result = self._client.query(
