@@ -75,6 +75,8 @@ This follows ClickHouse’s own “agentic data stack” pattern: the LLM decide
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed design.
 
+For the exact smallest judge-ready workflow, seeded demo contract, MCP behavior and pass/fail gates, see [VERTICAL_SLICE_SPEC.md](VERTICAL_SLICE_SPEC.md).
+
 At a high level:
 
 1. **Web app / production console** — ingest takes, review continuity, ask questions, approve/resolve warnings.
@@ -204,8 +206,9 @@ Planning/specification work may be prepared here, but submitted implementation m
 - Official rules: https://agentic-cinema.devpost.com/rules
 - ClickHouse MCP: https://github.com/ClickHouse/mcp-clickhouse
 - ClickHouse Agentic Data Stack: https://clickhouse.com/blog/the-agentic-data-stack
+- Gemini Enterprise MCP workflow docs: https://docs.cloud.google.com/gemini/enterprise/docs/workflow-builder/connect-mcp-servers
 - Gemini Enterprise Agent Platform ADK runtime quickstart: https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime/quickstart-adk
 
 ## Status
 
-Specification / architecture phase. See [progress.md](progress.md) for the current build handoff and next action.
+Specification / architecture phase. See [VERTICAL_SLICE_SPEC.md](VERTICAL_SLICE_SPEC.md) for the concrete implementation contract and [progress.md](progress.md) for the current handoff/next action.
