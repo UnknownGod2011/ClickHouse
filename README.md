@@ -13,7 +13,8 @@ This repository is a **personal open-source project** and the implementation is 
 - `TakeAnalysisService` with production/scene/take scope enforcement and stale-finding replacement on re-analysis.
 - ClickHouse DDL and deterministic `Glass House` Scene 28 seed data.
 - Parameter-bound ClickHouse reads/deletes and bulk inserts through the official `clickhouse-connect` client surface.
-- Hard-constraint editorial/continuity SQL builders.
+- Hard-constraint editorial/continuity SQL builders with validated configurable database identifiers.
+- Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, apply schema + seed, verify the Scene 28 contract, verify editorial retrieval, prove stale-finding deletion, and then drop the database.
 - Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, and ClickHouse adapter safety.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
@@ -25,7 +26,8 @@ A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is 
 - `src/takekeeper/clickhouse_memory.py` — separately permissioned ClickHouse application persistence adapter.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
 - `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
-- `tests/` — deterministic acceptance, pipeline, and adapter tests.
+- `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness.
+- `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
 - `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and Scene 28 fixture.
 - `progress.md` — exact current handoff.
 
@@ -37,11 +39,21 @@ Python 3.11+ is sufficient for the core:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-Install the production ClickHouse client only when using the database adapter:
+The real ClickHouse integration suite is skipped by default. Install the official client extra and explicitly opt in when a disposable/local or otherwise authorized ClickHouse instance is available:
 
 ```bash
 pip install -e '.[clickhouse]'
+TAKEKEEPER_CLICKHOUSE_INTEGRATION=1 \
+CLICKHOUSE_HOST=localhost \
+CLICKHOUSE_PORT=8123 \
+CLICKHOUSE_USER=default \
+CLICKHOUSE_PASSWORD='' \
+PYTHONPATH=src python -m unittest tests.test_clickhouse_integration -v
 ```
+
+For ClickHouse Cloud, set `CLICKHOUSE_SECURE=true`, use the service port/credentials supplied by ClickHouse, and optionally set `CLICKHOUSE_BOOTSTRAP_DATABASE` if the credential does not default to `default`.
+
+The integration harness creates a uniquely named `takekeeper_it_<suffix>` database, rewrites the checked-in schema/seed to that isolated database, runs assertions, and drops the database in teardown. **Only enable it with a credential that is allowed to create/drop a temporary database.** No secrets are read from files or committed.
 
 Construct the official client outside the domain layer and pass it to `ClickHouseProductionMemory`:
 
@@ -76,11 +88,11 @@ The editorial query asks for takes where Maya says “I'm leaving”, looks towa
 
 ClickHouse owns durable production facts; object storage owns raw media; agent session state is temporary; official MCP is the analytical read path; ingestion and human decisions use a separately permissioned application write path.
 
-Machine perception is candidate evidence, not automatic truth. Low-confidence differences request confirmation, and absent evidence never becomes fabricated absence. Tenant identifiers are always bound query parameters rather than interpolated SQL.
+Machine perception is candidate evidence, not automatic truth. Low-confidence differences request confirmation, and absent evidence never becomes fabricated absence. Tenant identifiers are always bound query parameters rather than interpolated SQL. Dynamic database identifiers are separately validated and restricted to letters, digits, and underscores.
 
 ## Next milestone
 
-Run the real ClickHouse adapter against a local/Cloud instance, execute schema + seed, assert exact Scene 28 persistence/re-analysis behavior, then pass **Gemini/ADK → official `ClickHouse/mcp-clickhouse` → one seeded fact** and record actual versions, transport, auth, tool payload, rows, latency, and read-only verification.
+Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record the concrete ClickHouse/client versions and timing. Then start the official read-only `ClickHouse/mcp-clickhouse` server against the seeded database, retrieve one seeded fact through `run_query`, and capture actual transport, auth, tool payload, rows, latency, and write-denial behavior before implementing the MCP evidence adapter.
 
 ## References
 
