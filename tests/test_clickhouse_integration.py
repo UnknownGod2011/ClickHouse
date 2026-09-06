@@ -6,6 +6,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from takekeeper.clickhouse_memory import ClickHouseProductionMemory
+from takekeeper.extraction import FixtureExtractionTransport, GovernedMultimodalExtractor, HERO_PROPERTY_REGISTRY, TakeExtractionRequest
+from takekeeper.extraction_store import ClickHouseExtractionProvenanceStore
 from takekeeper.fixtures import PRODUCTION_ID, SCENE_ID, scene_28_baselines, take_47_observations
 from takekeeper.models import Observation
 from takekeeper.queries import EditorialConstraints, editorial_retrieval_sql
@@ -28,6 +30,43 @@ def _execute_sql_script(client, sql: str) -> None:
         statement = statement.strip()
         if statement:
             client.command(statement)
+
+
+def _extraction_request(*, media_uri: str = "fixture://s28-t47?v=1") -> TakeExtractionRequest:
+    return TakeExtractionRequest(
+        production_id=PRODUCTION_ID,
+        scene_id=SCENE_ID,
+        take_id="S28-T47",
+        media_uri=media_uri,
+        duration_ms=10_000,
+        properties=tuple(HERO_PROPERTY_REGISTRY[:1]),
+        extractor_model="gemini-fixture",
+        extractor_version="fixture-v1",
+    )
+
+
+def _extraction_result(request: TakeExtractionRequest, *, run_id: str, value: str):
+    payload = {
+        "observations": [
+            {
+                "entity_id": "hero_mug",
+                "property_key": "hand",
+                "normalized_value": value,
+                "raw_model_value": value,
+                "evidence_start_ms": 1000,
+                "evidence_end_ms": 5000,
+                "confidence": 0.95,
+                "source_type": "vision",
+                "evidence_rationale_short": f"fixture sees mug in {value} hand",
+                "visibility_state": "clear",
+                "temporal_support": "sustained",
+            }
+        ]
+    }
+    return GovernedMultimodalExtractor(
+        FixtureExtractionTransport({request.media_uri: payload}),
+        run_id_factory=lambda: run_id,
+    ).extract(request)
 
 
 @unittest.skipUnless(
@@ -72,11 +111,15 @@ class RealClickHouseIntegrationTests(unittest.TestCase):
         cls.service = TakeAnalysisService(cls.memory)
         cls.decision_store = ClickHouseReviewDecisionStore(cls.client, database=cls.database)
         cls.review_service = FindingReviewService(cls.memory, cls.decision_store)
+        cls.extraction_store = ClickHouseExtractionProvenanceStore(cls.client, database=cls.database)
 
     def setUp(self) -> None:
         # Every acceptance case starts from the exact same deterministic fixture.
-        # This prevents re-analysis or review history from leaking across tests.
+        # This prevents re-analysis, review history, or extraction history from
+        # leaking across tests.
         for table in (
+            "extracted_observations",
+            "extraction_runs",
             "human_decisions",
             "continuity_findings",
             "continuity_baselines",
@@ -211,6 +254,56 @@ class RealClickHouseIntegrationTests(unittest.TestCase):
             parameters={"production_id": PRODUCTION_ID, "finding_id": expected_finding_id},
         ).result_set
         self.assertEqual([(2,)], count)
+
+    def test_extraction_reprocessing_preserves_independent_history(self) -> None:
+        request = _extraction_request()
+        first_result = _extraction_result(request, run_id="integration-run-1", value="left")
+        second_result = _extraction_result(request, run_id="integration-run-2", value="right")
+
+        first_run = self.extraction_store.append(request, first_result)
+        second_run = self.extraction_store.append(request, second_result)
+
+        self.assertEqual("integration-run-1", first_run.run_id)
+        self.assertEqual("integration-run-2", second_run.run_id)
+
+        runs = self.extraction_store.list_runs(
+            production_id=PRODUCTION_ID,
+            scene_id=SCENE_ID,
+            take_id="S28-T47",
+        )
+        self.assertEqual({"integration-run-1", "integration-run-2"}, {row.run_id for row in runs})
+        self.assertEqual(2, len(runs))
+
+        first_history = self.extraction_store.list_observations(
+            production_id=PRODUCTION_ID,
+            run_id="integration-run-1",
+        )
+        second_history = self.extraction_store.list_observations(
+            production_id=PRODUCTION_ID,
+            run_id="integration-run-2",
+        )
+        self.assertEqual(["left"], [row.normalized_value for row in first_history])
+        self.assertEqual(["right"], [row.normalized_value for row in second_history])
+        self.assertNotEqual(first_history[0].observation_id, second_history[0].observation_id)
+
+        counts = self.client.query(
+            f"SELECT run_id, count() FROM {self.database}.extracted_observations "
+            "WHERE production_id = {production_id:String} "
+            "AND scene_id = {scene_id:String} AND take_id = {take_id:String} "
+            "GROUP BY run_id ORDER BY run_id",
+            parameters={
+                "production_id": PRODUCTION_ID,
+                "scene_id": SCENE_ID,
+                "take_id": "S28-T47",
+            },
+        ).result_set
+        self.assertEqual([("integration-run-1", 1), ("integration-run-2", 1)], counts)
+
+        wrong_tenant = self.extraction_store.list_observations(
+            production_id="other-production",
+            run_id="integration-run-1",
+        )
+        self.assertEqual([], wrong_tenant)
 
     def test_reanalysis_removes_stale_findings(self) -> None:
         corrected = [
