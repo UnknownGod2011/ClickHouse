@@ -17,8 +17,9 @@ This repository is a **personal open-source project** and the implementation is 
 - A bounded `McpEvidenceReader` for the official MCP `run_query` tool. It only emits TakeKeeper-owned scoped SQL, validates production/scene/take scope on returned rows, records query latency/row-count provenance, and fails closed on malformed/tool-error/wrong-tenant responses.
 - Stable deterministic continuity finding IDs so a logical finding keeps the same identity across re-analysis even when evidence/value changes.
 - Append-only human review history through `FindingReviewService`, with both in-memory and ClickHouse-backed decision stores. Reviews are only accepted for findings that currently exist in the requested production/scene/take scope.
+- A narrow authenticated WSGI review API exposing only current finding/evidence/history reads and append-only bounded review decisions. Reviewer identity is derived from bearer authentication; callers cannot supply actor IDs, finding IDs, SQL, tables, or generic mutations.
 - Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, reset to the exact Scene 28 fixture before every acceptance case, verify continuity/editorial behavior, prove stable persisted finding IDs, prove append-only human review history, verify stale-finding deletion, and then drop the database.
-- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, and human-review scoping.
+- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, human-review scoping, and review API security.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
 
@@ -29,11 +30,13 @@ A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is 
 - `src/takekeeper/clickhouse_memory.py` — separately permissioned ClickHouse application persistence adapter.
 - `src/takekeeper/mcp_reader.py` — bounded, fail-closed read-only MCP evidence adapter.
 - `src/takekeeper/review.py` — stable finding identity, append-only review stores, and scoped review service.
+- `src/takekeeper/review_api.py` — authenticated, framework-light WSGI boundary for evidence review and append-only decisions.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
 - `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
 - `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness with per-test fixture isolation and review-audit assertions.
 - `tests/test_mcp_reader.py` — MCP payload/scope/failure tests without credentials.
 - `tests/test_review.py` — credential-free human-review identity/scoping/persistence tests.
+- `tests/test_review_api.py` — authenticated review API boundary tests.
 - `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
 - `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and Scene 28 fixture.
 - `progress.md` — exact current handoff.
@@ -97,6 +100,13 @@ Continuity findings use a deterministic UUIDv5 identity derived from production,
 
 `ClickHouseReviewDecisionStore` writes only to `human_decisions` using the trusted application connection and reads history with bound `production_id` + `finding_id` parameters. Decision history is append-only: prior human judgments are not overwritten when a later reviewer changes the disposition. The opt-in ClickHouse acceptance harness now verifies this contract against the real table by recording two decisions for the same deterministic finding identity and requiring both distinct decision rows to remain in chronological history.
 
+`ReviewHttpApp` is a small WSGI application that exposes only:
+
+- `POST /v1/review/context` — resolve the current scoped finding and return evidence plus append-only review history.
+- `POST /v1/review/decision` — append one of `confirmed`, `rejected`, or `needs_followup` with an optional bounded note.
+
+Both routes require a reviewer identity provider. `StaticBearerIdentityProvider` is available for local/self-hosted deployments and maps operator-configured bearer tokens to stable actor IDs using constant-time token comparison. The request body is capped at 16 KiB, notes at 2,000 characters, unexpected fields are rejected, responses use `Cache-Control: no-store`, and callers cannot provide `actor_id` or `finding_id`. Put this app behind TLS in any non-loopback deployment and inject tokens through environment/secret management rather than source control.
+
 ## Hero workflow
 
 For fictional production `glass-house`, Scene 28, baseline `S28-T31` has Maya holding the mug in her right hand, jacket zipped, lamp on. `S28-T47` changes mug to left, jacket to open, and lamp to off at low confidence. The expected result is two mismatches plus one `needs_confirmation` finding.
@@ -113,7 +123,7 @@ Machine perception is candidate evidence, not automatic truth. Low-confidence di
 
 Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record concrete ClickHouse/client versions and timings. Then start official `ClickHouse/mcp-clickhouse` in read-only mode against the seeded database, inject its `run_query` transport into `McpEvidenceReader`, prove the exact Scene 28 continuity/editorial results, and capture actual MCP version, transport, auth, payload, row count, latency, and explicit write-denial behavior.
 
-After the live MCP gate is measured, the next application-facing step is a minimal evidence-review API/UI over `FindingReviewService` so a script supervisor can inspect the evidence window, see uncertainty, and append a durable human disposition without exposing arbitrary write operations.
+The review service now has a safe authenticated HTTP boundary. After the live ClickHouse/MCP gate is measured, the next application-facing increment is a minimal operator UI over `/v1/review/context` and `/v1/review/decision`, followed by the governed multimodal extraction adapter and fixture-first evaluation.
 
 ## References
 
