@@ -18,8 +18,9 @@ This repository is a **personal open-source project** and the implementation is 
 - Stable deterministic continuity finding IDs so a logical finding keeps the same identity across re-analysis even when evidence/value changes.
 - Append-only human review history through `FindingReviewService`, with both in-memory and ClickHouse-backed decision stores. Reviews are only accepted for findings that currently exist in the requested production/scene/take scope.
 - A narrow authenticated WSGI review API exposing only current finding/evidence/history reads and append-only bounded review decisions. Reviewer identity is derived from bearer authentication; callers cannot supply actor IDs, finding IDs, SQL, tables, or generic mutations.
+- A same-origin, dependency-free operator review console at `GET /review` when `ReviewConsoleApp` wraps the review API. It renders evidence, confidence, baseline/observed values, evidence window, stable finding ID, immutable decision history, and the three bounded human dispositions without adding a new write primitive.
 - Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, reset to the exact Scene 28 fixture before every acceptance case, verify continuity/editorial behavior, prove stable persisted finding IDs, prove append-only human review history, verify stale-finding deletion, and then drop the database.
-- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, human-review scoping, and review API security.
+- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, human-review scoping, review API security, and review-console security/delegation.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
 
@@ -31,12 +32,14 @@ A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is 
 - `src/takekeeper/mcp_reader.py` — bounded, fail-closed read-only MCP evidence adapter.
 - `src/takekeeper/review.py` — stable finding identity, append-only review stores, and scoped review service.
 - `src/takekeeper/review_api.py` — authenticated, framework-light WSGI boundary for evidence review and append-only decisions.
+- `src/takekeeper/review_console.py` — same-origin human-review UI wrapper; all API requests are delegated to `ReviewHttpApp`.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
 - `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
 - `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness with per-test fixture isolation and review-audit assertions.
 - `tests/test_mcp_reader.py` — MCP payload/scope/failure tests without credentials.
 - `tests/test_review.py` — credential-free human-review identity/scoping/persistence tests.
 - `tests/test_review_api.py` — authenticated review API boundary tests.
+- `tests/test_review_console.py` — operator-console CSP, token-storage, endpoint-capability, method, and delegation tests.
 - `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
 - `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and Scene 28 fixture.
 - `progress.md` — exact current handoff.
@@ -107,6 +110,20 @@ Continuity findings use a deterministic UUIDv5 identity derived from production,
 
 Both routes require a reviewer identity provider. `StaticBearerIdentityProvider` is available for local/self-hosted deployments and maps operator-configured bearer tokens to stable actor IDs using constant-time token comparison. The request body is capped at 16 KiB, notes at 2,000 characters, unexpected fields are rejected, responses use `Cache-Control: no-store`, and callers cannot provide `actor_id` or `finding_id`. Put this app behind TLS in any non-loopback deployment and inject tokens through environment/secret management rather than source control.
 
+### Operator console
+
+Wrap an existing `ReviewHttpApp` to serve the minimal same-origin console:
+
+```python
+from takekeeper import ReviewConsoleApp
+
+app = ReviewConsoleApp(review_api)
+```
+
+`GET /review` serves a self-contained page with no external JavaScript, CSS, fonts, analytics, or asset dependencies. The bearer token is entered into a password input and is held only in the live page; the console intentionally does not use cookies, `localStorage`, or `sessionStorage`. Browser requests use only `/v1/review/context` and `/v1/review/decision` on the same origin. The page response is `no-store`, denies framing, disables referrers/content-type sniffing, and applies a restrictive CSP. The UI does **not** weaken the API boundary: `ReviewConsoleApp` delegates every API call unchanged to `ReviewHttpApp`, where authentication, request limits, scope validation, actor derivation, and append-only semantics remain authoritative.
+
+For production, terminate TLS before this WSGI application and replace the static bearer provider with deployment-native trusted identity when available. Do not expose the console over plaintext networking.
+
 ## Hero workflow
 
 For fictional production `glass-house`, Scene 28, baseline `S28-T31` has Maya holding the mug in her right hand, jacket zipped, lamp on. `S28-T47` changes mug to left, jacket to open, and lamp to off at low confidence. The expected result is two mismatches plus one `needs_confirmation` finding.
@@ -123,7 +140,7 @@ Machine perception is candidate evidence, not automatic truth. Low-confidence di
 
 Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record concrete ClickHouse/client versions and timings. Then start official `ClickHouse/mcp-clickhouse` in read-only mode against the seeded database, inject its `run_query` transport into `McpEvidenceReader`, prove the exact Scene 28 continuity/editorial results, and capture actual MCP version, transport, auth, payload, row count, latency, and explicit write-denial behavior.
 
-The review service now has a safe authenticated HTTP boundary. After the live ClickHouse/MCP gate is measured, the next application-facing increment is a minimal operator UI over `/v1/review/context` and `/v1/review/decision`, followed by the governed multimodal extraction adapter and fixture-first evaluation.
+The review boundary now includes a safe authenticated HTTP API and an operator console without broadening the mutation surface. If the live ClickHouse/MCP gate remains unavailable, the next strongest unblocked increment is the governed Gemini multimodal extraction adapter with fixture-first evaluation before any real footage or production credential is required.
 
 ## References
 
