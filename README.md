@@ -17,7 +17,7 @@ This repository is a **personal open-source project** and the implementation is 
 - A bounded `McpEvidenceReader` for the official MCP `run_query` tool. It only emits TakeKeeper-owned scoped SQL, validates production/scene/take scope on returned rows, records query latency/row-count provenance, and fails closed on malformed/tool-error/wrong-tenant responses.
 - Stable deterministic continuity finding IDs so a logical finding keeps the same identity across re-analysis even when evidence/value changes.
 - Append-only human review history through `FindingReviewService`, with both in-memory and ClickHouse-backed decision stores. Reviews are only accepted for findings that currently exist in the requested production/scene/take scope.
-- Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, apply schema + seed, verify the Scene 28 contract, verify editorial retrieval, prove stale-finding deletion, and then drop the database.
+- Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, reset to the exact Scene 28 fixture before every acceptance case, verify continuity/editorial behavior, prove stable persisted finding IDs, prove append-only human review history, verify stale-finding deletion, and then drop the database.
 - Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, and human-review scoping.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
@@ -31,7 +31,7 @@ A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is 
 - `src/takekeeper/review.py` — stable finding identity, append-only review stores, and scoped review service.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
 - `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
-- `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness.
+- `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness with per-test fixture isolation and review-audit assertions.
 - `tests/test_mcp_reader.py` — MCP payload/scope/failure tests without credentials.
 - `tests/test_review.py` — credential-free human-review identity/scoping/persistence tests.
 - `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
@@ -60,7 +60,7 @@ PYTHONPATH=src python -m unittest tests.test_clickhouse_integration -v
 
 For ClickHouse Cloud, set `CLICKHOUSE_SECURE=true`, use the service port/credentials supplied by ClickHouse, and optionally set `CLICKHOUSE_BOOTSTRAP_DATABASE` if the credential does not default to `default`.
 
-The integration harness creates a uniquely named `takekeeper_it_<suffix>` database, rewrites the checked-in schema/seed to that isolated database, runs assertions, and drops the database in teardown. **Only enable it with a credential that is allowed to create/drop a temporary database.** No secrets are read from files or committed.
+The integration harness creates a uniquely named `takekeeper_it_<suffix>` database, rewrites the checked-in schema/seed to that isolated database, resets mutable tables and reapplies the deterministic seed before each test, runs assertions, and drops the database in teardown. **Only enable it with a credential that is allowed to create/drop a temporary database and truncate its own temporary tables.** No secrets are read from files or committed.
 
 Construct the official client outside the domain layer and pass it to `ClickHouseProductionMemory`:
 
@@ -95,7 +95,7 @@ Continuity findings use a deterministic UUIDv5 identity derived from production,
 
 `FindingReviewService` never accepts a raw finding ID from the caller. It first resolves the requested entity/property against the current findings in the requested production/scene/take scope, derives the stable finding ID internally, then appends `confirmed`, `rejected`, or `needs_followup` to the decision store. This prevents cross-tenant or stale arbitrary IDs from being written through the review API.
 
-`ClickHouseReviewDecisionStore` writes only to `human_decisions` using the trusted application connection and reads history with bound `production_id` + `finding_id` parameters. Decision history is append-only: prior human judgments are not overwritten when a later reviewer changes the disposition.
+`ClickHouseReviewDecisionStore` writes only to `human_decisions` using the trusted application connection and reads history with bound `production_id` + `finding_id` parameters. Decision history is append-only: prior human judgments are not overwritten when a later reviewer changes the disposition. The opt-in ClickHouse acceptance harness now verifies this contract against the real table by recording two decisions for the same deterministic finding identity and requiring both distinct decision rows to remain in chronological history.
 
 ## Hero workflow
 
