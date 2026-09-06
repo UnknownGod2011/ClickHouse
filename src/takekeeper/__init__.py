@@ -17,6 +17,16 @@ from .extraction import (
     build_extraction_prompt,
 )
 from .extraction_eval import ExtractionEvaluation, TruthObservation, evaluate_extraction
+from .extraction_store import (
+    ClickHouseExtractionProvenanceStore,
+    ExtractedObservationRecord,
+    ExtractionPersistenceError,
+    ExtractionProvenanceStore,
+    ExtractionRunRecord,
+    InMemoryExtractionProvenanceStore,
+    media_fingerprint,
+    observation_record_id,
+)
 from .mcp_reader import (
     ContinuityEvidenceRow,
     EditorialHit,
@@ -40,14 +50,19 @@ from .service import TakeAnalysisService
 
 __all__ = [
     "Baseline",
+    "ClickHouseExtractionProvenanceStore",
     "ClickHouseProductionMemory",
     "ClickHouseReviewDecisionStore",
     "ContinuityEvidenceRow",
     "EditorialHit",
     "ExtractedObservation",
+    "ExtractedObservationRecord",
     "ExtractionError",
     "ExtractionEvaluation",
+    "ExtractionPersistenceError",
     "ExtractionPrompt",
+    "ExtractionProvenanceStore",
+    "ExtractionRunRecord",
     "ExtractionRunResult",
     "ExtractionSchemaError",
     "ExtractionTransportError",
@@ -56,6 +71,7 @@ __all__ = [
     "FixtureExtractionTransport",
     "GovernedMultimodalExtractor",
     "HERO_PROPERTY_REGISTRY",
+    "InMemoryExtractionProvenanceStore",
     "InMemoryProductionMemory",
     "InMemoryReviewDecisionStore",
     "McpEvidenceReader",
@@ -76,5 +92,7 @@ __all__ = [
     "build_extraction_prompt",
     "compare_observations",
     "evaluate_extraction",
+    "media_fingerprint",
+    "observation_record_id",
     "stable_finding_id",
 ]
