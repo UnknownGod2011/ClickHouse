@@ -20,6 +20,7 @@ from .review import (
     stable_finding_id,
 )
 from .review_api import ReviewHttpApp, ReviewerIdentityProvider, StaticBearerIdentityProvider
+from .review_console import ReviewConsoleApp
 from .service import TakeAnalysisService
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "McpReadError",
     "Observation",
     "ProductionMemory",
+    "ReviewConsoleApp",
     "ReviewDecision",
     "ReviewDecisionStore",
     "ReviewHttpApp",
