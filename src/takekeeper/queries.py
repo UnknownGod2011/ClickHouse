@@ -32,7 +32,8 @@ def continuity_evidence_sql(
 ) -> str:
     database = _database_identifier(database)
     return f"""WITH {_sql_string(production_id)} AS p, {_sql_string(scene_id)} AS s, {_sql_string(take_id)} AS t
-SELECT o.entity_id, o.property_key, o.normalized_value AS observed_value, o.confidence,
+SELECT o.production_id, o.scene_id, o.take_id,
+       o.entity_id, o.property_key, o.normalized_value AS observed_value, o.confidence,
        o.evidence_start_ms, o.evidence_end_ms, b.baseline_value,
        b.source_take_id AS baseline_source_take_id
 FROM {database}.observations AS o
@@ -51,7 +52,7 @@ def editorial_retrieval_sql(
     database = _database_identifier(database)
     boom = "true" if c.boom_visible else "false"
     line_present = "true" if c.target_line_present else "false"
-    return f"""SELECT t.take_id, t.take_number, t.director_rating,
+    return f"""SELECT t.take_id, t.take_number, t.director_rating, t.production_id, t.scene_id,
  maxIf(o.evidence_start_ms, o.property_key='dialogue.target_line_present') AS dialogue_evidence_ms,
  maxIf(o.evidence_start_ms, o.property_key='performance.eyeline.after_target_line') AS eyeline_evidence_ms
 FROM {database}.takes AS t
@@ -59,7 +60,7 @@ INNER JOIN {database}.observations AS o
  ON o.production_id=t.production_id AND o.scene_id=t.scene_id AND o.take_id=t.take_id
 WHERE t.production_id={_sql_string(c.production_id)} AND t.scene_id={_sql_string(c.scene_id)}
  AND t.director_rating >= {int(c.min_rating)}
-GROUP BY t.take_id, t.take_number, t.director_rating
+GROUP BY t.take_id, t.take_number, t.director_rating, t.production_id, t.scene_id
 HAVING countIf(o.property_key='dialogue.target_line_present' AND o.normalized_value={_sql_string(line_present)}) > 0
  AND countIf(o.property_key='performance.eyeline.after_target_line' AND o.normalized_value={_sql_string(c.eyeline)}) > 0
  AND countIf(o.property_key='quality.boom_visible' AND o.normalized_value={_sql_string(boom)}) > 0
