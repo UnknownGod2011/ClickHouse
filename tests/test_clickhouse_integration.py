@@ -9,6 +9,7 @@ from takekeeper.clickhouse_memory import ClickHouseProductionMemory
 from takekeeper.fixtures import PRODUCTION_ID, SCENE_ID, scene_28_baselines, take_47_observations
 from takekeeper.models import Observation
 from takekeeper.queries import EditorialConstraints, editorial_retrieval_sql
+from takekeeper.review import ClickHouseReviewDecisionStore, FindingReviewService, stable_finding_id
 from takekeeper.service import TakeAnalysisService
 
 
@@ -64,12 +65,26 @@ class RealClickHouseIntegrationTests(unittest.TestCase):
         schema = schema.replace("takekeeper.", f"{cls.database}.")
         _execute_sql_script(cls.client, schema)
 
-        seed = (REPO_ROOT / "sql" / "seed_demo.sql").read_text(encoding="utf-8")
-        seed = seed.replace("takekeeper.", f"{cls.database}.")
-        _execute_sql_script(cls.client, seed)
+        cls.seed_sql = (REPO_ROOT / "sql" / "seed_demo.sql").read_text(encoding="utf-8")
+        cls.seed_sql = cls.seed_sql.replace("takekeeper.", f"{cls.database}.")
 
         cls.memory = ClickHouseProductionMemory(cls.client, database=cls.database)
         cls.service = TakeAnalysisService(cls.memory)
+        cls.decision_store = ClickHouseReviewDecisionStore(cls.client, database=cls.database)
+        cls.review_service = FindingReviewService(cls.memory, cls.decision_store)
+
+    def setUp(self) -> None:
+        # Every acceptance case starts from the exact same deterministic fixture.
+        # This prevents re-analysis or review history from leaking across tests.
+        for table in (
+            "human_decisions",
+            "continuity_findings",
+            "continuity_baselines",
+            "observations",
+            "takes",
+        ):
+            self.client.command(f"TRUNCATE TABLE {self.database}.{table}")
+        _execute_sql_script(self.client, self.seed_sql)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -127,6 +142,75 @@ class RealClickHouseIntegrationTests(unittest.TestCase):
             take_id="S28-T47",
         )
         self.assertEqual(by_property, {finding.property_key: finding.status for finding in persisted})
+
+    def test_stable_finding_identity_and_append_only_review_history(self) -> None:
+        findings = self.service.analyze(
+            production_id=PRODUCTION_ID,
+            scene_id=SCENE_ID,
+            take_id="S28-T47",
+            observations=take_47_observations(),
+        )
+        mug = next(row for row in findings if row.property_key == "prop.mug.hand")
+        expected_finding_id = stable_finding_id(mug)
+
+        persisted_id = self.client.query(
+            f"SELECT finding_id FROM {self.database}.continuity_findings "
+            "WHERE production_id = {production_id:String} "
+            "AND scene_id = {scene_id:String} "
+            "AND current_take_id = {take_id:String} "
+            "AND entity_id = {entity_id:String} "
+            "AND property_key = {property_key:String}",
+            parameters={
+                "production_id": PRODUCTION_ID,
+                "scene_id": SCENE_ID,
+                "take_id": "S28-T47",
+                "entity_id": "maya",
+                "property_key": "prop.mug.hand",
+            },
+        ).result_set
+        self.assertEqual([(expected_finding_id,)], persisted_id)
+
+        first = self.review_service.review(
+            production_id=PRODUCTION_ID,
+            scene_id=SCENE_ID,
+            take_id="S28-T47",
+            entity_id="maya",
+            property_key="prop.mug.hand",
+            actor_id="script-supervisor-1",
+            decision="needs_followup",
+            note="Recheck insert shot before locking picture.",
+        )
+        second = self.review_service.review(
+            production_id=PRODUCTION_ID,
+            scene_id=SCENE_ID,
+            take_id="S28-T47",
+            entity_id="maya",
+            property_key="prop.mug.hand",
+            actor_id="script-supervisor-1",
+            decision="confirmed",
+            note="Confirmed against the approved master.",
+        )
+
+        self.assertEqual(expected_finding_id, first.finding_id)
+        self.assertEqual(expected_finding_id, second.finding_id)
+        self.assertNotEqual(first.decision_id, second.decision_id)
+
+        history = self.review_service.history(
+            production_id=PRODUCTION_ID,
+            scene_id=SCENE_ID,
+            take_id="S28-T47",
+            entity_id="maya",
+            property_key="prop.mug.hand",
+        )
+        self.assertEqual(["needs_followup", "confirmed"], [row.decision for row in history])
+        self.assertEqual([first.decision_id, second.decision_id], [row.decision_id for row in history])
+
+        count = self.client.query(
+            f"SELECT count() FROM {self.database}.human_decisions "
+            "WHERE production_id = {production_id:String} AND finding_id = {finding_id:String}",
+            parameters={"production_id": PRODUCTION_ID, "finding_id": expected_finding_id},
+        ).result_set
+        self.assertEqual([(2,)], count)
 
     def test_reanalysis_removes_stale_findings(self) -> None:
         corrected = [
