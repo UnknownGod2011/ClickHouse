@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .models import Baseline, Finding, Observation
+from .review import stable_finding_id
 
 
 class QueryResultLike(Protocol):
@@ -215,7 +216,7 @@ class ClickHouseProductionMemory:
             self._table("continuity_findings"),
             [
                 [
-                    row.production_id, row.scene_id, row.take_id, str(uuid4()),
+                    row.production_id, row.scene_id, row.take_id, stable_finding_id(row),
                     row.entity_id, row.property_key, row.baseline_value, row.observed_value,
                     self._severity(row), row.confidence, row.status, row.evidence_start_ms,
                     row.evidence_end_ms, row.baseline_source_take_id, now,
