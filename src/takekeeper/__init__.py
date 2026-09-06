@@ -1,6 +1,16 @@
 """TakeKeeper production-memory core."""
 
 from .continuity import compare_observations
+from .memory import InMemoryProductionMemory, ProductionMemory
 from .models import Baseline, Finding, Observation
+from .service import TakeAnalysisService
 
-__all__ = ["Baseline", "Finding", "Observation", "compare_observations"]
+__all__ = [
+    "Baseline",
+    "Finding",
+    "InMemoryProductionMemory",
+    "Observation",
+    "ProductionMemory",
+    "TakeAnalysisService",
+    "compare_observations",
+]

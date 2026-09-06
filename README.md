@@ -4,16 +4,18 @@
 
 TakeKeeper turns each recorded take into structured, evidence-backed production memory. Gemini-compatible multimodal extractors can produce observations; ClickHouse stores the durable history; and the official `ClickHouse/mcp-clickhouse` server is the read-side bridge for agentic production and editorial queries.
 
-This repository is now a **personal open-source project**. The implementation is actively being built here.
+This repository is a **personal open-source project** and the implementation is actively being built here.
 
 ## What works today
 
 - ClickHouse DDL for takes, observations, approved continuity baselines, findings, human decisions, and safe agent-run summaries.
 - A deterministic `Glass House` Scene 28 seed dataset.
 - Continuity comparison logic with explicit `mismatch`, `needs_confirmation`, `insufficient_evidence`, and `missing_baseline` behavior.
+- A transport-independent `ProductionMemory` protocol plus deterministic in-memory reference backend.
+- `TakeAnalysisService` orchestration that validates production/scene/take scope, ingests observations, loads baselines, computes findings, and replaces stale findings on re-analysis.
 - Hard-constraint ClickHouse query builders for continuity evidence and editorial retrieval.
-- Tenant/scene/take scoping in the query layer.
-- Unit tests for the fixed Scene 28 acceptance contract and failure-honesty behavior.
+- Tenant/scene/take scoping in both query and application-service layers.
+- Deterministic tests for Scene 28 behavior, failure honesty, idempotent re-analysis, and cross-production isolation.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
 
@@ -25,8 +27,11 @@ The editorial query asks for takes where Maya says “I'm leaving”, looks towa
 
 ## Repository map
 
-- `src/takekeeper/` — executable domain/query core.
-- `tests/` — deterministic acceptance tests.
+- `src/takekeeper/continuity.py` — deterministic continuity comparison.
+- `src/takekeeper/memory.py` — production-memory protocol and reference backend.
+- `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
+- `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
+- `tests/` — deterministic acceptance and pipeline tests.
 - `sql/schema.sql` — ClickHouse production-memory schema.
 - `sql/seed_demo.sql` — deterministic Scene 28 fixture.
 - `ARCHITECTURE.md`, `VERTICAL_SLICE_SPEC.md`, `DATA_AND_QUERY_CONTRACT.md`, `MULTIMODAL_EXTRACTION_AND_EVAL.md` — design contracts.
@@ -66,7 +71,7 @@ Machine perception is candidate evidence, not automatic truth. Low-confidence di
 
 ## Next milestone
 
-Pass **Gemini/ADK → official `ClickHouse/mcp-clickhouse` → real ClickHouse → one seeded fact**, then record actual ClickHouse/MCP versions, transport, auth, tool name, rows, MCP latency, end-to-end latency, and read-only verification. After that, wire the implemented Scene 28 core to the measured MCP response shape.
+Implement a real ClickHouse-backed `ProductionMemory` adapter that preserves the tested scope/idempotency contract, then pass **Gemini/ADK → official `ClickHouse/mcp-clickhouse` → real ClickHouse → one seeded fact** as soon as a reachable ClickHouse/Gemini environment exists. Record actual ClickHouse/MCP versions, transport, auth, tool name, rows, latency, and read-only verification before coupling the agent to MCP response details.
 
 ## References
 
