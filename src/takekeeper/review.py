@@ -193,7 +193,7 @@ class FindingReviewService:
         self._memory = memory
         self._decisions = decisions
 
-    def _find(
+    def get_finding(
         self,
         *,
         production_id: str,
@@ -202,6 +202,7 @@ class FindingReviewService:
         entity_id: str,
         property_key: str,
     ) -> Finding:
+        """Resolve one current finding inside an explicit production/scene/take scope."""
         findings = self._memory.list_findings(
             production_id=production_id,
             scene_id=scene_id,
@@ -231,7 +232,7 @@ class FindingReviewService:
         decision: ReviewOutcome,
         note: str = "",
     ) -> ReviewDecision:
-        target = self._find(
+        target = self.get_finding(
             production_id=production_id,
             scene_id=scene_id,
             take_id=take_id,
@@ -261,7 +262,7 @@ class FindingReviewService:
         entity_id: str,
         property_key: str,
     ) -> list[ReviewDecision]:
-        target = self._find(
+        target = self.get_finding(
             production_id=production_id,
             scene_id=scene_id,
             take_id=take_id,
