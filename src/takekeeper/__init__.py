@@ -11,20 +11,34 @@ from .mcp_reader import (
 )
 from .memory import InMemoryProductionMemory, ProductionMemory
 from .models import Baseline, Finding, Observation
+from .review import (
+    ClickHouseReviewDecisionStore,
+    FindingReviewService,
+    InMemoryReviewDecisionStore,
+    ReviewDecision,
+    ReviewDecisionStore,
+    stable_finding_id,
+)
 from .service import TakeAnalysisService
 
 __all__ = [
     "Baseline",
     "ClickHouseProductionMemory",
+    "ClickHouseReviewDecisionStore",
     "ContinuityEvidenceRow",
     "EditorialHit",
     "Finding",
+    "FindingReviewService",
     "InMemoryProductionMemory",
+    "InMemoryReviewDecisionStore",
     "McpEvidenceReader",
     "McpQueryTrace",
     "McpReadError",
     "Observation",
     "ProductionMemory",
+    "ReviewDecision",
+    "ReviewDecisionStore",
     "TakeAnalysisService",
     "compare_observations",
+    "stable_finding_id",
 ]
