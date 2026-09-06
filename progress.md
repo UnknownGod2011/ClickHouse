@@ -2,63 +2,63 @@
 
 ## Current status
 
-TakeKeeper now has the deterministic continuity core, in-memory and ClickHouse-backed `ProductionMemory` adapters, an environment-gated real ClickHouse acceptance harness, and a bounded fail-closed `McpEvidenceReader` for the official `ClickHouse/mcp-clickhouse` `run_query` tool. The trusted write path remains structurally separate from the read-only agent/MCP path. Live ClickHouse + MCP + Gemini execution is still unproven in this environment because no real ClickHouse service or Google runtime credential is reachable here.
+TakeKeeper now has the deterministic continuity core, in-memory and ClickHouse-backed `ProductionMemory` adapters, an environment-gated real ClickHouse acceptance harness, a bounded fail-closed `McpEvidenceReader`, stable deterministic continuity finding identities, and an append-only human review boundary with in-memory and ClickHouse-backed decision stores. The trusted write path remains structurally separate from the read-only agent/MCP path. Live ClickHouse + MCP + Gemini execution is still unproven in this environment because no real ClickHouse service or Google runtime credential is reachable here.
 
 ## Inspected this run
 
 - Read `progress.md` completely before deciding what to change.
-- Inspected the repository tree and current `src/takekeeper/` implementation, especially `queries.py`, `models.py`, package exports, `tests/test_queries.py`, `tests/test_clickhouse_integration.py`, `pyproject.toml`, and `README.md`.
-- Re-checked the current official `ClickHouse/mcp-clickhouse` repository. Its exposed ClickHouse tools remain `run_query`, `list_databases`, and `list_tables`.
-- Confirmed upstream `run_query` is read-only by default when `CLICKHOUSE_ALLOW_WRITE_ACCESS=false`.
-- Confirmed the upstream release/changelog path fixed successful tool responses to return valid JSON strings, so the TakeKeeper adapter treats JSON text as the primary observed compatibility shape while also accepting standard MCP text-content envelopes.
+- Inspected the repository root and `src/takekeeper/` tree.
+- Inspected `models.py`, `memory.py`, `clickhouse_memory.py`, package exports, `sql/schema.sql`, `tests/test_clickhouse_memory.py`, and `README.md`.
+- Confirmed the schema already had an append-only `human_decisions` table, but the implementation had no usable review service/store.
+- Found a concrete identity defect: `ClickHouseProductionMemory.replace_findings()` generated a new random UUID for every finding on every re-analysis, while that ID is the foreign reference used by `human_decisions`. Because the domain did not expose the generated random ID, later human review could not reliably target or preserve the identity of the same logical finding.
 
 ## Changes made this run
 
-- Added `src/takekeeper/mcp_reader.py` with a bounded `McpEvidenceReader` that never accepts arbitrary agent SQL. It only calls `run_query` using TakeKeeper-owned typed continuity/editorial query builders.
-- Added typed `ContinuityEvidenceRow`, `EditorialHit`, `McpQueryTrace`, and `McpReadError` contracts.
-- Added strict MCP response normalization for:
-  - official JSON-string row results;
-  - standard MCP text-content envelopes;
-  - `structuredContent` / `structured_content` wrappers;
-  - small future-compatible `data` / `rows` / `result` row-list wrappers.
-- Added fail-closed behavior for MCP tool errors, transport failures, non-JSON text, malformed row lists, wrong production/scene/take scope, invalid confidence, and invalid evidence windows.
-- Added per-query latency + row-count provenance in `McpQueryTrace`.
-- Hardened `continuity_evidence_sql` and `editorial_retrieval_sql` so analytical result rows explicitly project production/scene/take scope identifiers. This lets the adapter independently reject cross-tenant/cross-scene/cross-take results after MCP execution.
-- Preserved editorial result ordering/leading columns so the existing real-DB acceptance assertion on `row[0] == take_id` remains compatible.
-- Exported the new MCP types from `takekeeper.__init__`.
-- Added `tests/test_mcp_reader.py` with 8 credential-free tests covering official JSON text, MCP text envelope, structured wrapper, empty result, transport outage, wrong-production rejection, malformed/tool-error responses, invalid confidence, and invalid evidence windows.
-- Updated `README.md` with the implemented MCP boundary, scope-validation model, failure behavior, repository map, and revised live milestone.
+- Added `src/takekeeper/review.py`.
+- Added `stable_finding_id(finding)`, a deterministic UUIDv5 identity derived from production + scene + take + entity + property. Mutable evidence/value/status are intentionally excluded so the same logical concern keeps one identity across re-analysis.
+- Changed ClickHouse continuity persistence to store `stable_finding_id(row)` instead of a fresh random UUID when writing `continuity_findings.finding_id`.
+- Added typed `ReviewDecision` and `ReviewOutcome` contracts.
+- Added `ReviewDecisionStore` protocol plus `InMemoryReviewDecisionStore` and `ClickHouseReviewDecisionStore`.
+- ClickHouse human decisions are append-only and use the existing `human_decisions` table; prior decisions are never mutated or overwritten.
+- Added `FindingReviewService`, which never accepts an arbitrary raw finding ID from callers. It first resolves the requested entity/property from the current production/scene/take findings, derives the stable ID internally, and only then records a decision.
+- Review outcomes are bounded to `confirmed`, `rejected`, or `needs_followup`; blank actor identities are rejected.
+- ClickHouse review-history reads bind `production_id` and `finding_id` as parameters; dynamic database identifiers remain validated.
+- Exported review contracts from `takekeeper.__init__`.
+- Added `tests/test_review.py` with credential-free coverage for stable identity across re-analysis, scoped review success/history, cross-production rejection, mandatory actor identity, ClickHouse append/read parameter binding, and database identifier validation.
+- Extended `tests/test_clickhouse_memory.py` with an assertion that persisted finding IDs equal the deterministic domain identity.
+- Updated `README.md` with the human-review boundary, stable identity rationale, repository map, safety properties, and the minimal review-UI milestone.
 - No GitHub Actions or CI workflows were added.
 
 ## Validation
 
-- Reconstructed the new `mcp_reader.py`, revised `queries.py`, and `tests/test_mcp_reader.py` in an isolated local package and executed the new test module.
-- Result: **8 tests passed** (`Ran 8 tests ... OK`).
-- The full repository suite was not re-run from GitHub because this execution container still cannot resolve/clone `github.com`; no full-suite pass is claimed.
-- The query changes preserve existing public function signatures and keep `take_id` as column 0 for editorial integration assertions.
-- Real ClickHouse execution, real MCP transport/auth, and real Gemini orchestration remain pending and are not claimed as proven.
+- Attempted to clone the actual updated repository and run `python -m unittest discover -s tests -v`.
+- The execution container still cannot resolve `github.com`, so the clone failed before the full repository suite could run. No full-suite pass is claimed.
+- Reconstructed the new review module with compatible `Finding` and `InMemoryProductionMemory` contracts in an isolated local package and ran six credential-free tests covering the new behavior.
+- Result: **6 tests passed** (`Ran 6 tests ... OK`).
+- `review.py` was syntax-compiled before upload.
+- Real ClickHouse review persistence, the environment-gated DB harness, official MCP transport/auth, and Gemini orchestration remain pending and are not claimed as live-proven.
 
 ## Decisions locked
 
-1. Official MCP is read-only and is never reused for ingestion/persistence credentials.
-2. Trusted application writes use `ClickHouseProductionMemory` through a separately permissioned client.
-3. The model-facing MCP adapter does not expose arbitrary SQL; it exposes bounded TakeKeeper analytical operations.
-4. Generated analytical SQL scopes production/scene/take, and every MCP result row is scope-validated again before becoming evidence.
-5. MCP failure or malformed evidence fails closed via `McpReadError`; it is never translated into a positive continuity/editorial claim.
-6. Empty MCP results remain truthful empty evidence rather than fabricated absence.
-7. Query latency and row count are recorded for later agent/evaluation provenance.
-8. Trusted persistence still uses bound parameters; dynamic database identifiers remain validated to letters, digits, and underscores.
-9. Runtime MCP/auth/version/latency/write-denial claims must be measured on a real environment.
-10. The real integration harness stays opt-in and disposable-database-only.
+1. Official MCP is read-only and is never reused for ingestion, persistence, or human-review credentials.
+2. Trusted application writes use separately permissioned ClickHouse clients.
+3. Model-facing MCP remains bounded to TakeKeeper-owned analytical operations; arbitrary agent SQL is not exposed.
+4. Continuity finding identity is deterministic over logical scope (`production_id`, `scene_id`, `take_id`, `entity_id`, `property_key`) and is independent of mutable evidence/status.
+5. Human decisions are append-only audit records; later judgments do not erase earlier judgments.
+6. The review service derives finding IDs internally from a finding that currently exists in the requested scope; callers cannot submit arbitrary finding IDs.
+7. Generated analytical SQL scopes production/scene/take, and MCP result rows are scope-validated again before becoming evidence.
+8. MCP failures/malformed evidence fail closed; empty results remain truthful empty evidence.
+9. Trusted persistence uses bound parameters; dynamic database identifiers remain validated to letters, digits, and underscores.
+10. Runtime MCP/auth/version/latency/write-denial claims must be measured on a real environment.
 
 ## Gates
 
-- **Gate A live integration:** NOT YET PROVEN; adapter implemented, live official MCP transport pending.
+- **Gate A live integration:** NOT YET PROVEN; adapters implemented, live official MCP transport pending.
 - **Gate B continuity correctness:** CORE + APP SERVICE + CLICKHOUSE ADAPTER + REAL-DB HARNESS + MCP EVIDENCE READER IMPLEMENTED; live execution pending.
-- **Gate C evidence:** durable nullable evidence + typed MCP evidence/provenance implemented; review UI pending.
+- **Gate C evidence/review:** durable nullable evidence + stable finding identity + append-only scoped human-review service/store IMPLEMENTED; review API/UI pending.
 - **Gate D editorial retrieval:** SQL + real-DB acceptance assertion + MCP typed reader implemented; live MCP execution pending.
 - **Gate E failure honesty:** domain + persistence + MCP outage/empty/malformed/wrong-scope behavior implemented and unit-tested.
-- **Gate F security:** app-layer scoping + parameter binding + database identifier validation + read/write credential separation + MCP result scope validation implemented; ClickHouse RBAC/write-denial runtime proof pending.
+- **Gate F security:** app-layer scoping + parameter binding + database identifier validation + read/write credential separation + MCP result scope validation + review-scope resolution implemented; ClickHouse RBAC/write-denial runtime proof pending.
 - **Gate G multimodal evidence:** not started; governed by `MULTIMODAL_EXTRACTION_AND_EVAL.md`.
 
 ## Blockers / unknowns
@@ -67,23 +67,24 @@ TakeKeeper now has the deterministic continuity core, in-memory and ClickHouse-b
 2. No Gemini/Google runtime credentials, so Gemini/ADK orchestration cannot be truthfully demonstrated.
 3. Actual ClickHouse server version, `clickhouse-connect` version, official MCP runtime version, transport/auth, concrete live response envelope, row count, and latency remain unmeasured.
 4. Explicit runtime write-denial proof with the real MCP credential is still pending.
-5. No self-owned demo footage exists yet.
-6. The current execution container cannot resolve `github.com`, so the complete repository test suite cannot be cloned and run here.
+5. Real ClickHouse persistence of the new human-review path is not yet acceptance-tested against a live server.
+6. No self-owned demo footage exists yet.
+7. The current execution container cannot resolve `github.com`, so the complete repository test suite cannot be cloned and run here.
 
 ## Highest-priority backlog
 
+- Extend the real ClickHouse integration harness to assert stable persisted finding IDs and append/read one `human_decisions` row without mutating prior history.
 - Execute `tests/test_clickhouse_integration.py` against an authorized local or ClickHouse Cloud instance and fix any version-specific DDL/client behavior.
 - Start official `mcp-clickhouse` with `CLICKHOUSE_ALLOW_WRITE_ACCESS=false` against the seeded database.
 - Inject the real MCP client's `call_tool` transport into `McpEvidenceReader` and retrieve the Scene 28 continuity rows plus exact editorial hits (`S28-T31`, `S28-T47`).
 - Capture official MCP version, transport, auth mode, actual payload envelope, row counts, per-query latency, and server/client versions.
 - Attempt a harmless write through the MCP credential and record the expected denial without changing data.
-- Add an environment-gated live MCP acceptance test using the measured transport API and preserve the existing fake-transport tests.
-- Add persisted human decisions and a minimal evidence-review API/UI.
+- Add a minimal evidence-review HTTP API/UI over `FindingReviewService` that shows evidence window/confidence/status/history and appends decisions without arbitrary write primitives.
 - Implement the governed Gemini multimodal extraction adapter with fixture-first evaluation before real footage.
 
 ## Single best next step
 
-**Run official `ClickHouse/mcp-clickhouse` in read-only mode against the disposable seeded ClickHouse integration database and drive one real Scene 28 continuity query plus the editorial query through `McpEvidenceReader`; record the actual MCP payload/auth/version/latency and prove write denial.**
+**Extend the environment-gated real ClickHouse acceptance harness to prove the new stable finding identity + append-only human-decision contract end to end, then run that harness on an authorized ClickHouse instance when one is reachable.**
 
 ## Sources / implementation references
 
