@@ -15,8 +15,10 @@ This repository is a **personal open-source project** and the implementation is 
 - Parameter-bound ClickHouse reads/deletes and bulk inserts through the official `clickhouse-connect` client surface.
 - Hard-constraint editorial/continuity SQL builders with validated configurable database identifiers.
 - A bounded `McpEvidenceReader` for the official MCP `run_query` tool. It only emits TakeKeeper-owned scoped SQL, validates production/scene/take scope on returned rows, records query latency/row-count provenance, and fails closed on malformed/tool-error/wrong-tenant responses.
+- Stable deterministic continuity finding IDs so a logical finding keeps the same identity across re-analysis even when evidence/value changes.
+- Append-only human review history through `FindingReviewService`, with both in-memory and ClickHouse-backed decision stores. Reviews are only accepted for findings that currently exist in the requested production/scene/take scope.
 - Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, apply schema + seed, verify the Scene 28 contract, verify editorial retrieval, prove stale-finding deletion, and then drop the database.
-- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, and MCP response parsing.
+- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, and human-review scoping.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
 
@@ -26,10 +28,12 @@ A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is 
 - `src/takekeeper/memory.py` — production-memory protocol and in-memory reference backend.
 - `src/takekeeper/clickhouse_memory.py` — separately permissioned ClickHouse application persistence adapter.
 - `src/takekeeper/mcp_reader.py` — bounded, fail-closed read-only MCP evidence adapter.
+- `src/takekeeper/review.py` — stable finding identity, append-only review stores, and scoped review service.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
 - `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
 - `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness.
 - `tests/test_mcp_reader.py` — MCP payload/scope/failure tests without credentials.
+- `tests/test_review.py` — credential-free human-review identity/scoping/persistence tests.
 - `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
 - `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and Scene 28 fixture.
 - `progress.md` — exact current handoff.
@@ -85,6 +89,14 @@ The parser supports the official server's current JSON-string query result plus 
 
 Apply `sql/schema.sql`, then `sql/seed_demo.sql` to a real ClickHouse instance. The findings schema uses nullable evidence fields so `insufficient_evidence` and `missing_baseline` remain representable without fabricated values.
 
+## Human review boundary
+
+Continuity findings use a deterministic UUIDv5 identity derived from production, scene, take, entity, and property. The ID intentionally excludes mutable evidence values/status so the same logical continuity concern keeps one stable identity if a take is re-analyzed.
+
+`FindingReviewService` never accepts a raw finding ID from the caller. It first resolves the requested entity/property against the current findings in the requested production/scene/take scope, derives the stable finding ID internally, then appends `confirmed`, `rejected`, or `needs_followup` to the decision store. This prevents cross-tenant or stale arbitrary IDs from being written through the review API.
+
+`ClickHouseReviewDecisionStore` writes only to `human_decisions` using the trusted application connection and reads history with bound `production_id` + `finding_id` parameters. Decision history is append-only: prior human judgments are not overwritten when a later reviewer changes the disposition.
+
 ## Hero workflow
 
 For fictional production `glass-house`, Scene 28, baseline `S28-T31` has Maya holding the mug in her right hand, jacket zipped, lamp on. `S28-T47` changes mug to left, jacket to open, and lamp to off at low confidence. The expected result is two mismatches plus one `needs_confirmation` finding.
@@ -100,6 +112,8 @@ Machine perception is candidate evidence, not automatic truth. Low-confidence di
 ## Next milestone
 
 Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record concrete ClickHouse/client versions and timings. Then start official `ClickHouse/mcp-clickhouse` in read-only mode against the seeded database, inject its `run_query` transport into `McpEvidenceReader`, prove the exact Scene 28 continuity/editorial results, and capture actual MCP version, transport, auth, payload, row count, latency, and explicit write-denial behavior.
+
+After the live MCP gate is measured, the next application-facing step is a minimal evidence-review API/UI over `FindingReviewService` so a script supervisor can inspect the evidence window, see uncertainty, and append a durable human disposition without exposing arbitrary write operations.
 
 ## References
 
