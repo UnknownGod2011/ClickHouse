@@ -11,6 +11,9 @@ license = {text = "Apache-2.0"}
 authors = [{name = "TakeKeeper contributors"}]
 dependencies = []
 
+[project.optional-dependencies]
+clickhouse = ["clickhouse-connect>=1,<2"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
