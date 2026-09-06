@@ -2,51 +2,72 @@
 
 ## Current status
 
-The repository now has a concrete judge-ready vertical slice **and** a ClickHouse-specific data/query contract. The product concept, sponsor story, logical architecture, evidence rules, exact demo fixture, query semantics, scale-test strategy, and implementation acceptance gates are now sufficiently specified for a hackathon-permitted Gemini implementation session.
+TakeKeeper now has four complementary implementation handoffs:
 
-The next engineering milestone remains deliberately narrow: prove one real Gemini/ADK → official ClickHouse MCP → real ClickHouse read before spending time on UI or video extraction.
+1. `ARCHITECTURE.md` — system boundaries and production topology.
+2. `VERTICAL_SLICE_SPEC.md` — deterministic judge-ready workflow and Gates A–F.
+3. `DATA_AND_QUERY_CONTRACT.md` — ClickHouse table/query/evidence semantics and runtime evidence template.
+4. `MULTIMODAL_EXTRACTION_AND_EVAL.md` — conservative Gemini video-extraction, evidence, ground-truth, and evaluation contract.
+
+The product concept and seeded ClickHouse/MCP vertical slice are sufficiently specified for implementation with hackathon-permitted Google/partner tooling. The next engineering milestone remains deliberately narrow: **prove Gate A with a real Gemini/ADK → official ClickHouse MCP → real ClickHouse read before investing in UI or automatic video extraction.**
 
 ## Inspected this run
 
 - Read the existing `progress.md` completely before making changes.
-- Re-read `README.md`, `ARCHITECTURE.md`, and `VERTICAL_SLICE_SPEC.md` to avoid duplicating earlier work.
-- Checked current ClickHouse guidance on schema/query optimization, projections/materialized views, JSON, and recent search capabilities.
-- Confirmed that the MVP should keep hero continuity predicates in explicit typed columns and avoid speculative optimization until real query traces exist.
+- Re-read `README.md` and `VERTICAL_SLICE_SPEC.md` so the new work extends rather than duplicates the existing handoff.
+- Verified current official Gemini video-understanding guidance and Vertex AI video input patterns.
+- Re-checked current MCP ecosystem references while keeping the official `ClickHouse/mcp-clickhouse` path as the required sponsor integration.
 
 ## Changes made this run
 
-### Created `DATA_AND_QUERY_CONTRACT.md`
-Added the implementation-facing contract for the ClickHouse production-memory layer:
+### Created `MULTIMODAL_EXTRACTION_AND_EVAL.md`
 
-- source-of-truth boundaries for ClickHouse, object storage, and agent session state;
-- MVP table semantics for `takes`, `observations`, `continuity_baselines`, `continuity_findings`, `human_decisions`, and `agent_runs`;
-- hero continuity property keys for the deterministic `Glass House` demo;
-- guidance to keep frequently queried continuity facts typed/columnar rather than buried in flexible JSON;
-- continuity-check query contract and exact expected result for `S28-T47`;
-- editorial-retrieval hard-constraint contract and exact include/exclude expectations;
-- MCP read discipline requiring a fresh production-state read before factual answers;
-- tenant-isolation contract requiring `production_id` scoping plus application authorization;
-- evidence contract for every finding/result;
-- two-tier evaluation plan: deterministic demo + synthetic metadata/observation scale test;
-- explicit optimization-trigger policy so projections/materialized views are introduced only after measured need;
-- Gate A runtime-evidence template to record actual ClickHouse/MCP/runtime details instead of assumptions;
-- post-Gate-A implementation sequence.
+Added a concrete post-Gate-A multimodal contract covering:
 
-### Updated `README.md`
-- Linked `DATA_AND_QUERY_CONTRACT.md` directly from the architecture section.
-- Added current ClickHouse best-practice guidance to the references.
-- Clarified that the repository now contains three implementation handoff layers: architecture, vertical slice, and data/query contract.
+- one-take-at-a-time extraction units;
+- strict schema-compatible observation output;
+- property registries and allowed normalized values;
+- evidence-window/timestamp validation;
+- a conservative two-pass extraction/validation strategy;
+- explicit human-verification states;
+- self-owned labeled demo-footage design;
+- per-property evaluation metrics instead of one misleading blended accuracy number;
+- go/no-go rules for allowing a property into the live judge flow;
+- reprocessing/model-version audit rules;
+- failure behavior for missing visibility, invalid timestamps, schema errors and disagreeing extraction passes;
+- implementation sequence that starts with sustained mug-hand + jacket state and evaluates lamp/boom/dialogue/eyeline later.
+
+### Critical multimodal risk resolved in the product design
+
+Current official Gemini video-understanding documentation states that File API video processing samples at roughly **1 frame per second** and warns that fast action can lose detail. That materially affects TakeKeeper's proposed continuity properties.
+
+The design is now explicitly adjusted:
+
+- persistent jacket/lamp states are strong early extraction targets;
+- mug-hand state is suitable when held for several seconds;
+- a brief boom intrusion cannot safely be treated as absent merely because Gemini did not observe it;
+- a quick eyeline shift should not be a hero multimodal claim until measured;
+- demo footage must deliberately hold hero visual states long enough to be observable;
+- transient/ambiguous properties should stay seeded, human-confirmed, or out of the 3-minute live extraction path until evaluation proves them.
+
+This prevents the final demo from overclaiming frame-level continuity accuracy from a temporally sampled video representation.
 
 ## Key decisions now locked
 
-1. **Typed columns for hero predicates.** Mug hand, jacket state, lamp state, eyeline, boom visibility, dialogue presence, confidence, take identity, and ratings should not be hidden inside opaque metadata for the MVP.
-2. **ClickHouse remains durable production memory; raw media stays in object storage.**
-3. **Agent session memory is not authoritative.** Any answer about production state must re-read ClickHouse through MCP.
-4. **Hard editorial constraints should be enforced from structured data rather than post-hoc LLM intuition.**
-5. **Every query is production-scoped.** `production_id` isolation and application authorization are part of the product contract, not optional polish.
-6. **No speculative ClickHouse optimization.** Start with a simple MergeTree-family direction and measure actual query latency/scans before considering projections/materialized views.
-7. **Scale claims must be measured.** The final README/demo should report real observed latency rather than marketing claims.
-8. **Gate A evidence must be recorded factually.** Exact transport/auth/version/tool/row-count/latency details stay unknown until the permitted implementation session proves them.
+1. **Gate A remains first.** Do not start Gemini vision work until the real Gemini/ADK → official ClickHouse MCP → ClickHouse path works.
+2. **ClickHouse is durable production memory; raw media remains in object storage.**
+3. **MCP remains read-only for the agent path.** Ingestion/human decisions use a separately permissioned backend write path.
+4. **Agent session memory is not production truth.** Production-history answers require a fresh ClickHouse MCP read.
+5. **Hero continuity predicates remain explicit typed fields/normalized properties, not arbitrary JSON blobs.**
+6. **Hard editorial constraints are enforced by structured data/query semantics rather than LLM intuition.**
+7. **Every production query is scoped by `production_id` plus application authorization.**
+8. **No speculative ClickHouse optimization.** Measure first; projections/materialized views come only after demonstrated need.
+9. **Multimodal output is candidate evidence, not automatic truth.** Schema validity, visibility, evidence windows, confidence and human verification remain separate concepts.
+10. **No frame-perfect claim.** Standard Gemini video sampling means the MVP must favor sustained visible states and measure transient-property behavior explicitly.
+11. **Boom absence requires caution.** Failure to observe a short-lived boom is not proof of absence unless the tested pipeline demonstrates adequate coverage.
+12. **Model upgrades never silently rewrite production history.** Reprocessing creates new extraction versions; human-confirmed baselines/decisions persist.
+13. **Self-owned labeled clips are the benchmark.** Do not tune ground-truth labels after seeing model output.
+14. **Report per-property evaluation.** Mug hand, jacket, lamp, boom and eyeline have different failure modes and should not be hidden behind one synthetic accuracy score.
 
 ## Current acceptance gates
 
@@ -68,37 +89,33 @@ If ClickHouse/MCP is unavailable or has no supporting data, the agent fails visi
 ### Gate F — Security
 MCP is read-only and no ClickHouse/MCP credentials reach the browser.
 
-Do not spend significant time on automatic video extraction or visual polish until A–F pass.
+### Gate G — Multimodal evidence quality (post A–F)
+For the fixed self-owned labeled clips, every judge-facing high-severity machine-extracted mismatch has valid visible evidence; ambiguous properties abstain/request confirmation rather than becoming unsupported facts.
 
-## Important current technical facts
-
-- The official `ClickHouse/mcp-clickhouse` path remains the required runtime bridge for the sponsor story.
-- Its core analytical tools include `run_query`, `list_databases`, and `list_tables`; the MVP should keep the agent read-only.
-- Current ClickHouse guidance favors designing ordering/sort keys around actual access patterns and using projections/materialized views only when their read benefits justify additional write/storage cost.
-- Recent ClickHouse releases provide mature JSON, full-text, and vector-search capabilities that may be useful later, but **none is necessary to prove the TakeKeeper MVP**.
-- The current deterministic query contract is intentionally structured so the demo does not depend on fuzzy search or ambiguous perception.
+Do not spend significant time on automatic video extraction or visual polish until A–F pass. Gate G governs which visual properties may enter the live multimodal demo after that.
 
 ## Risks / unresolved blockers
 
 1. **No submitted implementation exists yet** by design; code must be produced with hackathon-permitted Google/partner tooling.
 2. **Gate A is still unproven:** exact deployed Gemini/ADK ↔ official ClickHouse MCP connection/auth method must be tested in the implementation environment.
 3. **No real ClickHouse service/demo database is provisioned yet.**
-4. **No physical ClickHouse schema has been measured.** Sorting/engine decisions must be finalized against the real service/version and query traces.
-5. **No demo footage exists.** The seeded contract is fixed, but self-created/authorized clips are still needed for multimodal expansion.
-6. **Gemini extraction reliability is unknown** for some visual properties; start with obvious mug-hand/jacket/lamp/boom/eyeline states and measure against labels.
-7. **License file is still missing.** The public submission requires an open-source license before final submission.
+4. **No physical ClickHouse schema has been measured.** Sorting/engine decisions must be finalized against real version/query traces.
+5. **No self-owned demo footage exists yet.** The new multimodal contract specifies how to shoot/label it once seeded Gates A–F are stable.
+6. **Gemini extraction accuracy is unmeasured for TakeKeeper properties.** Default video sampling makes transient boom/eyeline behavior a specific known risk.
+7. **License file is still missing.** Add the required open-source license before final submission.
 8. **Hosted UI, API service and MCP endpoint do not exist yet.** Keep these minimal until Gate A works.
+9. **MCP/runtime version details remain unknown until measured.** Do not encode assumptions as facts in the final README/demo.
 
 ## Highest-priority implementation backlog
 
 ### P0 — Gate A only
 - Provision a minimal ClickHouse service/database.
-- Create the smallest schema required for one known production fact using the contract in `DATA_AND_QUERY_CONTRACT.md`.
+- Create the smallest schema required for one known production fact using `DATA_AND_QUERY_CONTRACT.md`.
 - Seed one known production fact.
 - Run official `ClickHouse/mcp-clickhouse` with authentication and read-only access.
 - Connect a Gemini/ADK agent using hackathon-permitted Google tooling.
-- Ask for the known production fact and verify that the response demonstrably came through the MCP tool path.
-- Record the Gate A runtime-evidence template from `DATA_AND_QUERY_CONTRACT.md` here.
+- Ask for the known production fact and verify the response demonstrably came through MCP.
+- Record ClickHouse version, MCP version/commit, transport, auth, tool invoked, row count and latency.
 
 ### P0 — Gates B–D
 - Seed the full `Glass House` Scene 28 fixture.
@@ -118,36 +135,44 @@ Do not spend significant time on automatic video extraction or visual polish unt
 - Evidence viewer.
 - Human confirm/reject action.
 - Ask-production input.
-- Safe agent-activity drawer.
+- Safe agent-activity drawer showing MCP usage without chain-of-thought/secrets.
 
-### P1 — Multimodal expansion
-- Create short self-owned demo clips matching the fixed fixture.
-- Gemini multimodal extraction into the strict observation contract.
-- Compare extraction against ground truth before enabling a property in the judge flow.
+### P1 — Gate G multimodal expansion
+Follow `MULTIMODAL_EXTRACTION_AND_EVAL.md`:
+- shoot/label `S28-T31` and `S28-T47` first;
+- test sustained mug-hand + jacket state first;
+- validate timestamps/schema/evidence against ground truth;
+- add lamp next;
+- create one sustained visible-boom negative control;
+- test dialogue timing;
+- evaluate eyeline last;
+- promote only properties that meet the live-demo go/no-go criteria.
 
 ### P2 — production readiness / submission
 - Synthetic scale dataset + measured ClickHouse/MCP latency.
-- Failure-state UX.
-- Evaluation matrix.
+- Failure-state UX and evaluation matrix.
 - Hosted deployment/runbook.
 - Public license.
 - README setup/test instructions.
 - Deterministic 3-minute recording showing genuine Google Cloud + ClickHouse runtime use.
+- Publish only measured performance/accuracy claims.
 
 ## Single best next step
 
 **Using Gemini CLI / Gemini Code Assist or another hackathon-permitted Google/partner implementation tool, pass Gate A only: provision the smallest real ClickHouse dataset, connect the official authenticated read-only ClickHouse MCP server, and make a real Gemini/ADK runtime retrieve one seeded production fact.**
 
-Immediately record the actual ClickHouse version, MCP version/commit, transport, auth mode, tool invoked, row count, tool latency, end-to-end latency, read-only verification, and any runtime limitation using the evidence template in `DATA_AND_QUERY_CONTRACT.md`. Those measured facts should determine the final physical schema and deployment choices.
+Immediately record the actual ClickHouse version, official MCP version/commit, transport, authentication mode, tool invoked, returned row count, MCP latency, end-to-end latency, read-only verification and any runtime limitation. Those measured facts should determine subsequent deployment/schema decisions.
+
+After Gates A–F pass, use `MULTIMODAL_EXTRACTION_AND_EVAL.md` rather than improvising video prompts or demo footage.
 
 ## Sources
 
 - https://agentic-cinema.devpost.com/
 - https://agentic-cinema.devpost.com/rules
-- https://agentic-cinema.devpost.com/details/dates
 - https://github.com/ClickHouse/mcp-clickhouse
 - https://clickhouse.com/blog/the-agentic-data-stack
 - https://clickhouse.com/blog/10-best-practice-tips
-- https://clickhouse.com/blog/what-a-difference-10-years-of-open-source-makes
 - https://docs.cloud.google.com/gemini/enterprise/docs/workflow-builder/connect-mcp-servers
 - https://docs.cloud.google.com/gemini-enterprise-agent-platform/
+- https://ai.google.dev/gemini-api/docs/video-understanding
+- https://docs.cloud.google.com/vertex-ai/generative-ai/docs/samples/googlegenaisdk-textgen-with-video
