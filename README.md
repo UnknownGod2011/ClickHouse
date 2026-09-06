@@ -14,8 +14,9 @@ This repository is a **personal open-source project** and the implementation is 
 - ClickHouse DDL and deterministic `Glass House` Scene 28 seed data.
 - Parameter-bound ClickHouse reads/deletes and bulk inserts through the official `clickhouse-connect` client surface.
 - Hard-constraint editorial/continuity SQL builders with validated configurable database identifiers.
+- A bounded `McpEvidenceReader` for the official MCP `run_query` tool. It only emits TakeKeeper-owned scoped SQL, validates production/scene/take scope on returned rows, records query latency/row-count provenance, and fails closed on malformed/tool-error/wrong-tenant responses.
 - Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, apply schema + seed, verify the Scene 28 contract, verify editorial retrieval, prove stale-finding deletion, and then drop the database.
-- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, and ClickHouse adapter safety.
+- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, and MCP response parsing.
 
 A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
 
@@ -24,9 +25,11 @@ A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is 
 - `src/takekeeper/continuity.py` — deterministic continuity comparison.
 - `src/takekeeper/memory.py` — production-memory protocol and in-memory reference backend.
 - `src/takekeeper/clickhouse_memory.py` — separately permissioned ClickHouse application persistence adapter.
+- `src/takekeeper/mcp_reader.py` — bounded, fail-closed read-only MCP evidence adapter.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
 - `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
 - `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness.
+- `tests/test_mcp_reader.py` — MCP payload/scope/failure tests without credentials.
 - `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
 - `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and Scene 28 fixture.
 - `progress.md` — exact current handoff.
@@ -76,6 +79,10 @@ Use a separately permissioned application credential for this write adapter. Do 
 
 The application persistence path may insert/update production memory. The agent-facing official `ClickHouse/mcp-clickhouse` connection remains read-only (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`) and is only used for analytical retrieval. This prevents model-directed writes from bypassing application validation and human-control boundaries.
 
+`McpEvidenceReader` accepts a host-supplied `call_tool(name, arguments)` function and only invokes `run_query` using TakeKeeper's own typed query builders. It does not expose an arbitrary SQL method to the model-facing layer. Continuity/editorial queries now project their scope identifiers so every returned row can be rejected if it crosses production, scene, or take boundaries.
+
+The parser supports the official server's current JSON-string query result plus MCP text-content envelopes and a small future-compatible structured wrapper. Transport failure, tool error, malformed JSON, malformed rows, wrong scope, impossible confidence, or invalid evidence windows all raise `McpReadError` instead of fabricating evidence.
+
 Apply `sql/schema.sql`, then `sql/seed_demo.sql` to a real ClickHouse instance. The findings schema uses nullable evidence fields so `insufficient_evidence` and `missing_baseline` remain representable without fabricated values.
 
 ## Hero workflow
@@ -88,11 +95,11 @@ The editorial query asks for takes where Maya says “I'm leaving”, looks towa
 
 ClickHouse owns durable production facts; object storage owns raw media; agent session state is temporary; official MCP is the analytical read path; ingestion and human decisions use a separately permissioned application write path.
 
-Machine perception is candidate evidence, not automatic truth. Low-confidence differences request confirmation, and absent evidence never becomes fabricated absence. Tenant identifiers are always bound query parameters rather than interpolated SQL. Dynamic database identifiers are separately validated and restricted to letters, digits, and underscores.
+Machine perception is candidate evidence, not automatic truth. Low-confidence differences request confirmation, and absent evidence never becomes fabricated absence. Tenant identifiers are scoped in generated analytical SQL and validated again on MCP response rows. Trusted persistence uses parameter binding; dynamic database identifiers are separately validated and restricted to letters, digits, and underscores.
 
 ## Next milestone
 
-Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record the concrete ClickHouse/client versions and timing. Then start the official read-only `ClickHouse/mcp-clickhouse` server against the seeded database, retrieve one seeded fact through `run_query`, and capture actual transport, auth, tool payload, rows, latency, and write-denial behavior before implementing the MCP evidence adapter.
+Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record concrete ClickHouse/client versions and timings. Then start official `ClickHouse/mcp-clickhouse` in read-only mode against the seeded database, inject its `run_query` transport into `McpEvidenceReader`, prove the exact Scene 28 continuity/editorial results, and capture actual MCP version, transport, auth, payload, row count, latency, and explicit write-denial behavior.
 
 ## References
 
