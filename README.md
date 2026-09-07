@@ -19,6 +19,7 @@ This repository is a personal open-source project.
 - A credential-free multimodal benchmark that measures normalized-value accuracy, temporal evidence IoU, extraction disposition, projection eligibility, final continuity status, and unsupported assertions independently.
 - A deterministic benchmark CLI/release gate that emits stable JSON and exits non-zero on quality regression.
 - A local synthetic-media generator that renders text-free self-owned MP4 fixtures from the immutable benchmark truth and records manifest/artifact SHA-256 provenance without committing video binaries.
+- A live-candidate benchmark runner that maps those immutable benchmark cases to trusted external `https://`/`gs://` media, executes the Google transport through the same governed extractor, and preserves the same scoring/release-gate contract without leaking signed media URIs into reports.
 
 Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered proven after execution against authorized real services; fixture tests are not presented as live-service validation.
 
@@ -28,7 +29,8 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 - `src/takekeeper/google_genai_transport.py` — optional Google Gen AI / Vertex AI multimodal transport.
 - `src/takekeeper/extraction_projection.py` — strict evidence-to-current-continuity projection boundary.
 - `src/takekeeper/multimodal_benchmark.py` — independent benchmark metrics.
-- `src/takekeeper/benchmark_cli.py` — stable JSON benchmark runner and release gate.
+- `src/takekeeper/benchmark_cli.py` — stable JSON deterministic benchmark runner and release gate.
+- `src/takekeeper/live_candidate_benchmark.py` — external-media Gemini/Vertex candidate runner using the same benchmark truth and scoring contract.
 - `src/takekeeper/fixture_media.py` — local deterministic synthetic-video renderer and content-provenance manifest.
 - `src/takekeeper/continuity.py` — deterministic continuity comparison.
 - `src/takekeeper/memory.py` / `clickhouse_memory.py` — memory protocol and ClickHouse persistence.
@@ -41,6 +43,7 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 - `tests/fixtures/multimodal_eval/manifest.json` — labeled credential-free multimodal benchmark manifest.
 - `BENCHMARK.md` — benchmark semantics, thresholds, and usage.
 - `FIXTURE_MEDIA.md` — generated-video workflow and content-digest provenance contract.
+- `LIVE_BENCHMARK.md` — external media map, Gemini/Vertex live evaluation, and provenance/security contract.
 - `GEMINI_INTEGRATION.md` — provider setup and transport trust boundary.
 - `progress.md` — exact implementation handoff and next step.
 
@@ -89,6 +92,27 @@ takekeeper-generate-fixture-media \
 ```
 
 Generated clips and `media-manifest.json` land under `.takekeeper/generated-eval-media/` by default. That directory is ignored by Git. The renderer does not place semantic labels in the video; it represents mug-hand state, jacket state, and deliberate occlusion using geometry only. The generated manifest records the exact truth-manifest digest, ffmpeg provenance, artifact sizes, and SHA-256 of every MP4. See `FIXTURE_MEDIA.md`.
+
+## Evaluate a live Gemini / Vertex candidate
+
+Keep the truth manifest unchanged. Upload only self-owned generated clips to a trusted private location outside TakeKeeper, then create a separate `takekeeper-live-media-map-v1` JSON that maps every benchmark case name to its trusted `gs://` or supported `https://` video URI and contains the SHA-256 of the exact truth manifest.
+
+Install the optional provider dependency and run:
+
+```bash
+pip install -e '.[gemini]'
+
+takekeeper-live-benchmark \
+  tests/fixtures/multimodal_eval/manifest.json \
+  /secure/path/live-media-map.json \
+  --model <gemini-model-id> \
+  --extractor-version <candidate-label> \
+  --output .takekeeper/live-benchmark-report.json
+```
+
+Add `--vertex-ai` for Vertex AI; project/location may come from `--project` / `--location` or `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`. Provider API keys are intentionally not accepted as command-line flags.
+
+The runner fingerprints the media-map bytes but never emits its URI values into the report, because signed HTTPS entries may contain secrets. It has no upload primitive and continues to use `GovernedMultimodalExtractor` for local scope/property/value/evidence validation before scoring. See `LIVE_BENCHMARK.md`.
 
 ## ClickHouse application path
 
@@ -168,15 +192,16 @@ The deterministic `glass-house` Scene 28 fixture contains continuity and editori
 - Trusted writes and agent-facing MCP reads use separate credentials and capabilities.
 - Dynamic database identifiers are validated; values are parameter-bound.
 - Generated benchmark media is local-only by default and has no automatic upload path.
+- Live benchmark URI maps are operator-owned external inputs and signed/private URI values are not copied into reports.
 - No credential, API key, raw private media, or secret belongs in the repository or benchmark reports.
 
 ## Next production gates
 
 1. Run the full credential-free suite plus actual fixture-media rendering in a normal checkout and fix any concrete failures.
-2. Add a live-candidate benchmark path that replaces deterministic fixture responses with `GoogleGenAIExtractionTransport` while preserving the exact truth manifest and report schema.
-3. Upload only the generated self-owned clips to a trusted private media location, execute one live Gemini/Vertex candidate, and archive both benchmark JSON and generated-media digests.
-4. Execute the disposable ClickHouse integration suites against a real authorized instance.
-5. Start official `ClickHouse/mcp-clickhouse` read-only and record actual auth/transport/version behavior, query latency, result shape, and explicit write denial.
+2. Upload only the generated self-owned clips to a trusted private media location, execute one live Gemini/Vertex candidate with `takekeeper-live-benchmark`, and archive both benchmark JSON and generated-media digests.
+3. Execute the disposable ClickHouse integration suites against a real authorized instance.
+4. Start official `ClickHouse/mcp-clickhouse` read-only and record actual auth/transport/version behavior, query latency, result shape, and explicit write denial.
+5. Add optional ingest-time content hashing and trusted MIME metadata for production media so provenance can move beyond URI + duration fingerprints.
 
 ## References
 
