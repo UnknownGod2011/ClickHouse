@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 clickhouse = ["clickhouse-connect>=1,<2"]
+gemini = ["google-genai>=1,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
