@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from .extraction import HERO_PROPERTY_REGISTRY, GovernedMultimodalExtractor
@@ -35,18 +35,18 @@ class ProductionIngestConfig:
     clickhouse_host: str
     clickhouse_port: int
     clickhouse_username: str
-    clickhouse_password: str
-    clickhouse_database: str
-    clickhouse_secure: bool
-    gemini_mode: str
-    gemini_model: str
-    gemini_api_key: str | None
-    google_cloud_project: str | None
-    google_cloud_location: str | None
-    extractor_version: str
-    prompt_schema_version: str
-    ingest_bearer_token: str
-    ingest_actor_id: str
+    clickhouse_password: str = field(repr=False)
+    clickhouse_database: str = "takekeeper"
+    clickhouse_secure: bool = True
+    gemini_mode: str = "vertex"
+    gemini_model: str = ""
+    gemini_api_key: str | None = field(default=None, repr=False)
+    google_cloud_project: str | None = None
+    google_cloud_location: str | None = None
+    extractor_version: str = ""
+    prompt_schema_version: str = "takekeeper-extraction-v1"
+    ingest_bearer_token: str = field(default="", repr=False)
+    ingest_actor_id: str = "ingest-api"
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] | None = None) -> "ProductionIngestConfig":
