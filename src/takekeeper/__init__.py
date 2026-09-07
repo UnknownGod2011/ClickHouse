@@ -40,6 +40,12 @@ from .google_genai_transport import (
     GoogleGenAITransportError,
     create_google_genai_client,
 )
+from .google_identity import (
+    GoogleIdentityClaims,
+    GoogleIdentityConfigurationError,
+    GoogleOidcIdentityProvider,
+    IapIdentityProvider,
+)
 from .ingest_api import IngestHttpApp
 from .ingest_runtime import (
     IngestBootstrapError,
@@ -103,8 +109,12 @@ __all__ = [
     "GoogleGenAIExtractionTransport",
     "GoogleGenAITransportConfig",
     "GoogleGenAITransportError",
+    "GoogleIdentityClaims",
+    "GoogleIdentityConfigurationError",
+    "GoogleOidcIdentityProvider",
     "GovernedMultimodalExtractor",
     "HERO_PROPERTY_REGISTRY",
+    "IapIdentityProvider",
     "InMemoryExtractionProvenanceStore",
     "InMemoryProductionMemory",
     "InMemoryReviewDecisionStore",
