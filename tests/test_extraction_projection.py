@@ -10,7 +10,9 @@ from takekeeper.extraction import (
     TakeExtractionRequest,
 )
 from takekeeper.extraction_projection import compare_extraction_to_baselines
+from takekeeper.memory import InMemoryProductionMemory
 from takekeeper.models import Baseline
+from takekeeper.service import TakeAnalysisService
 
 
 class ExtractionProjectionTests(unittest.TestCase):
@@ -53,12 +55,14 @@ class ExtractionProjectionTests(unittest.TestCase):
             source_take_id="S28-T31",
         )
 
-    def _analyze(self, payload):
-        result = GovernedMultimodalExtractor(
+    def _extract(self, payload, *, run_id="run-projection"):
+        return GovernedMultimodalExtractor(
             FixtureExtractionTransport({"fixture://projection": payload}),
-            run_id_factory=lambda: "run-projection",
+            run_id_factory=lambda: run_id,
         ).extract(self._request())
-        return compare_extraction_to_baselines(result=result, baselines=[self._baseline()])
+
+    def _analyze(self, payload):
+        return compare_extraction_to_baselines(result=self._extract(payload), baselines=[self._baseline()])
 
     def test_high_confidence_sustained_evidence_can_become_mismatch(self):
         findings, projection = self._analyze(self._payload())
@@ -111,6 +115,35 @@ class ExtractionProjectionTests(unittest.TestCase):
         self.assertEqual(projection.decisions[0].reason, "temporal_support_not_sustained")
         self.assertFalse(projection.decisions[0].projected)
         self.assertEqual(findings[0].status, "insufficient_evidence")
+
+    def test_new_abstaining_run_replaces_stale_machine_projection(self):
+        memory = InMemoryProductionMemory()
+        memory.upsert_baselines([self._baseline()])
+        service = TakeAnalysisService(memory)
+
+        first_findings, _ = service.analyze_extraction(self._extract(self._payload(), run_id="run-1"))
+        self.assertEqual(first_findings[0].status, "mismatch")
+        self.assertEqual(len(memory.list_observations(production_id="glass-house", scene_id="28", take_id="S28-T47")), 1)
+
+        abstaining = copy.deepcopy(self._payload())
+        abstaining["observations"][0].update(
+            normalized_value="unknown",
+            confidence=0.35,
+            visibility_state="occluded",
+            temporal_support="unknown",
+        )
+        second_findings, second_projection = service.analyze_extraction(
+            self._extract(abstaining, run_id="run-2")
+        )
+
+        self.assertEqual(second_projection.observations, ())
+        self.assertEqual(
+            memory.list_observations(production_id="glass-house", scene_id="28", take_id="S28-T47"),
+            [],
+        )
+        self.assertEqual(len(second_findings), 1)
+        self.assertEqual(second_findings[0].status, "insufficient_evidence")
+        self.assertIsNone(second_findings[0].observed_value)
 
 
 if __name__ == "__main__":
