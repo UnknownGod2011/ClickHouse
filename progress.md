@@ -2,134 +2,130 @@
 
 ## Current status
 
-TakeKeeper is a personal open-source production-memory system with a deterministic continuity core, in-memory and ClickHouse-backed state, bounded read-only ClickHouse MCP evidence access, append-only review and extraction provenance, authenticated review surfaces, governed multimodal extraction, fail-closed extraction-to-continuity projection, retry-safe persistence, and an optional Google Gen AI / Vertex AI transport.
+TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed production state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, a Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, and a live external-media candidate benchmark path.
 
-Machine continuity state is replacement-based: only clear, sustained, non-abstaining `machine_high_confidence` evidence is eligible to become current continuity state. Later abstaining re-analysis clears stale current projection for the exact trusted production/scene/take while historical extraction provenance remains append-only.
+Machine continuity state remains replacement-based: only clear, sustained, non-abstaining `machine_high_confidence` evidence may become current continuity state. Later governed re-analysis can clear stale projected machine state for the exact trusted production/scene/take while preserving historical extraction provenance.
 
-The multimodal evaluation path now includes a deterministic release-gate CLI, a local synthetic-video generator, and a live-candidate runner. The live runner keeps benchmark truth immutable, maps cases to separately supplied trusted external media URIs, executes the same governed extractor/scoring path with Gemini/Vertex, fingerprints the media map, and deliberately omits signed/private URI values from reports.
-
-Live ClickHouse, official MCP, Gemini/Vertex quality, and generated-video rendering remain intentionally unclaimed until exercised against authorized real services and a runnable local checkout.
+This run adds a production-media provenance boundary that distinguishes locator identity from actual byte identity and supports trusted explicit MIME metadata for extensionless private media.
 
 ## Inspected this run
 
-- Read `progress.md` completely before deciding what to change.
-- Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and write permission is available.
-- Inspected `src/takekeeper/benchmark_cli.py`, `src/takekeeper/extraction.py`, `src/takekeeper/google_genai_transport.py`, `tests/fixtures/multimodal_eval/manifest.json`, `pyproject.toml`, and `README.md`.
-- Confirmed the previous single best next step was the live-candidate benchmark path rather than more deterministic fixture-only evaluation work.
-- Preserved the existing benchmark truth labels, fixture responses, evidence windows, thresholds, and generated-media design.
+- Read the previous `progress.md` completely before deciding what to change.
+- Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and that the connected account has write permission.
+- Inspected the repository tree and the current extraction/Gemini path, especially:
+  - `src/takekeeper/extraction.py`;
+  - `src/takekeeper/google_genai_transport.py`;
+  - `src/takekeeper/extraction_store.py`;
+  - `tests/test_google_genai_transport.py`.
+- Confirmed the existing production provenance fingerprint in `extraction_store.py` is explicitly locator+duration identity, not a media content hash.
+- Confirmed the Google transport currently infers MIME only from the URI path suffix, which blocks otherwise-valid extensionless signed/object URLs.
+- Preserved all existing benchmark truth, continuity policy, tenant scope, ClickHouse/MCP boundaries, and Gemini structured-output validation rules.
 
 ## Exact changes made this run
 
-### Live candidate benchmark runner
+### Trusted media provenance module
 
-Added `src/takekeeper/live_candidate_benchmark.py`.
+Added `src/takekeeper/media_provenance.py` with a dependency-free ingest contract.
 
-The runner:
+It provides:
 
-- evaluates the existing immutable `takekeeper-multimodal-eval-v1` truth manifest without rewriting its fixture `media_uri` or `response` fields;
-- accepts a separate `takekeeper-live-media-map-v1` JSON document that maps every benchmark case name to a trusted external media URI;
-- requires the media map to carry the SHA-256 of the exact truth-manifest bytes and rejects mismatches before model invocation;
-- requires an exact case-set match, rejecting missing and unexpected mappings before model invocation;
-- bounds candidate identity fields and media URI length;
-- routes every mapped take through `GovernedMultimodalExtractor`, so trusted production/scene/take scope, configured property/value registries, evidence bounds, allowed source types, visibility/temporal support, and confidence policy remain locally enforced;
-- reuses the exact same `evaluate_benchmark_run` metrics and `BenchmarkThresholds` release-gate policy as the deterministic benchmark;
-- records the candidate model/version, truth-manifest SHA-256, media-map SHA-256, and `external_media_candidate` run mode;
-- never emits live media URI values in the report, avoiding leakage of signed HTTPS query parameters/private object names;
-- contains no upload, deletion, ClickHouse write, or MCP write path.
+- `TrustedMediaProvenance` — redaction-safe media provenance containing locator SHA-256, duration, MIME type, optional content SHA-256, and optional byte size;
+- `LocalMediaDigest` — content digest metadata for a local operator-owned media file;
+- `resolve_video_mime_type()` — validates trusted `https://` / `gs://` locators and resolves an allow-listed video MIME type;
+- `build_media_provenance()` — creates bounded provenance without copying a signed/private locator into the record;
+- `hash_local_media()` — streams and hashes local media without uploading, mutating, deleting, or transcoding it.
 
-### Gemini / Vertex CLI
+Security and correctness behavior:
 
-Exposed a new console command:
+- rejects plaintext HTTP, local/FTP media locators, malformed GCS locators, embedded URL credentials, and oversized locators;
+- supports extensionless private/signed media when the trusted ingest layer supplies explicit video MIME metadata;
+- fails closed when explicit MIME metadata conflicts with an inferable URI/file suffix;
+- allow-lists only the same video families currently supported by the Google transport;
+- validates content SHA-256 as lowercase 64-character hex;
+- prevents byte size from being presented without a content digest;
+- local hashing rejects symlinks, non-regular files, empty files, files above a configurable size ceiling, and pathological chunk sizes;
+- verifies the observed byte count still equals the pre-read file size to detect a simple class of in-place file changes while hashing;
+- hashes the complete trusted locator, including signed query parameters, but stores only the digest so query secrets do not appear in downstream provenance objects.
 
-```text
-takekeeper-live-benchmark
-```
-
-The CLI composes `create_google_genai_client` + `GoogleGenAIExtractionTransport` and supports both Gemini Developer API SDK credential discovery and Vertex AI via `--vertex-ai` with project/location from flags or `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`.
-
-API keys are intentionally not accepted as command-line options. Provider/credential exceptions that are not bounded local validation errors are reduced to exception-class names at the CLI boundary instead of blindly copying provider exception strings that may contain request metadata.
+The locator fingerprint remains explicitly **not** a content hash. Content SHA-256 is the stronger identity when ingest can access the original bytes.
 
 ### Regression coverage
 
-Added `tests/test_live_candidate_benchmark.py` covering:
+Added `tests/test_media_provenance.py` covering:
 
-- execution through the same governed extraction/scoring path with externally mapped media;
-- exact manifest/media-map SHA-256 provenance;
-- candidate identity replacing fixture-only model metadata;
-- signed media URI/query-secret non-disclosure in reports;
-- manifest-digest mismatch rejection before transport invocation;
-- missing/unexpected case rejection before transport invocation;
-- explicit threshold regression behavior;
-- bounded media URI length.
+- extensionless signed HTTPS + explicit `video/mp4`;
+- normal suffix MIME inference;
+- ambiguous locator rejection without trusted MIME metadata;
+- MIME/suffix conflict rejection;
+- unsafe URI rejection;
+- signed-query non-disclosure in provenance object representation;
+- content digest + byte-size recording;
+- byte-size-without-digest rejection;
+- malformed/uppercase/non-hex digest rejection;
+- streamed local hashing and deterministic SHA-256;
+- extensionless local media with trusted explicit MIME;
+- symlink rejection;
+- size ceilings;
+- chunk-size bounds.
 
-Tests inject `FixtureExtractionTransport`, so they require no Google credentials or network access once a checkout exists.
+### Documentation
 
-### Packaging and documentation
+Added `MEDIA_PROVENANCE.md` documenting:
 
-Updated `pyproject.toml` with:
-
-```toml
-takekeeper-live-benchmark = "takekeeper.live_candidate_benchmark:main"
-```
-
-Added `LIVE_BENCHMARK.md` covering:
-
-- the separate media-map contract;
-- Developer API and Vertex AI usage;
-- immutable-truth discipline;
-- report and provenance handling;
-- URI secrecy behavior;
-- absence of upload authority;
-- live-quality claims and security boundaries.
-
-Updated `README.md` so current capabilities, repository map, local commands, safety boundaries, and production gates include the live-candidate path rather than listing it as future work.
+- locator identity versus byte identity;
+- trusted MIME metadata for extensionless production media;
+- safe local pre-upload hashing;
+- a concrete ingest example;
+- signed-URL logging restrictions;
+- the remaining wiring step into `TakeExtractionRequest` / `ExtractionPrompt` / the Google transport.
 
 ### Repository safety
 
 - No GitHub Actions workflow was added, modified, triggered, or rerun.
-- No provider credential, signed media map, private media, secret, paid service, destructive operation, or unrelated repository was touched.
-- No automatic media upload was added.
-- Trusted production/scene/take scope and benchmark truth remain application-owned rather than model-owned.
+- No unrelated repository was touched.
+- No credential, private media object, signed media map, paid service, ClickHouse endpoint, Gemini endpoint, object-storage endpoint, or destructive operation was used.
+- The new local hashing helper has no upload/delete/transcode authority.
 
 ## Validation / results
 
-- Files were written directly to `UnknownGod2011/ClickHouse` `main` through the authenticated GitHub connector.
-- Implementation commits this run:
-  - `76ab85ed66cb08c8daf1e8070a90dc4e155ec4a7` — live candidate benchmark runner;
-  - `9f717bf16c024d7358d1df8ec3d767f777ee8a4f` — live benchmark regression coverage;
-  - `823b696be0e83da52463e04d88dfe0958e303475` — live benchmark console entrypoint;
-  - `fe1768a649360610b87df36ccbf53a95d95c0a59` — live benchmark documentation;
-  - `a5a9b3bdc53cb5affea384500a0872edf01f24b8` — README coherence update.
-- Attempted a clean checkout and targeted execution:
-  - `PYTHONPATH=src python -m unittest tests.test_live_candidate_benchmark tests.test_multimodal_benchmark tests.test_benchmark_cli -v`
-- The execution container failed before Python started because `github.com` DNS resolution remains unavailable: `Could not resolve host: github.com`.
-- Therefore the new tests are structurally reviewed but **not claimed as passing** in this environment.
-- No live Gemini/Vertex request, real ClickHouse request, official MCP session, or actual ffmpeg rendering was made.
+Files were written directly to `UnknownGod2011/ClickHouse` `main` through the authenticated GitHub connector.
+
+Implementation commits this run:
+
+- `3037f436f56c340135376bcbfb8809c9574859b3` — trusted media provenance utilities;
+- `c5773795fd9a5202f7f9aab34be82b326917d3f7` — media provenance regression tests;
+- `97f8abe0631e1e80c346af150fcb177b5c11009a` — media provenance documentation.
+
+A normal local checkout is still unavailable in this automation environment, so the new Python test module could not be executed here. The tests are therefore structurally reviewed but **not claimed as passing**. No GitHub Actions run was used as a workaround.
+
+No live Gemini/Vertex request, real ClickHouse request, official MCP session, or actual production-media hash was performed in this run.
 
 ## Decisions locked
 
-1. Official ClickHouse MCP remains read-only and is not reused for application writes or credentials.
+1. Official ClickHouse MCP remains read-only and is never reused for application writes or credential handling.
 2. Trusted application writes use separately permissioned ClickHouse clients.
 3. Agent-facing MCP access stays bounded to TakeKeeper-owned analytical operations; arbitrary agent SQL is not exposed.
-4. Production/scene/take scope is trusted application metadata and is never accepted from model output.
+4. Production/scene/take scope remains trusted application metadata and is never accepted from model output.
 5. Only configured entity/property pairs and registry values can enter governed extraction.
 6. Machine confidence is not human confirmation.
 7. Extraction provenance is append-only; reprocessing creates a new run.
 8. Multi-table extraction persistence is not represented as transactional; deterministic identity + reconciliation provide retry safety.
-9. Continuity projection is stricter than extraction persistence: uncertain evidence can be retained historically but cannot become current continuity state.
+9. Continuity projection is stricter than extraction persistence: uncertain evidence may be retained historically but cannot become current continuity state.
 10. Missing/abstaining projected evidence becomes `insufficient_evidence`, never a mismatch.
 11. Governed re-analysis replaces current projected state only for the exact trusted take scope so stale evidence cannot survive a later abstention.
 12. Google structured output is a formatting aid, not a trust boundary; responses are locally validated before persistence/projection.
-13. The Google transport cannot choose tools, production scope, persistence operations, or media identity.
-14. Evaluation reports independent metrics for value, evidence localization, disposition, projection, and continuity outcome rather than one blended AI-accuracy score.
-15. Benchmark pass/fail policy is explicit and recorded in every report; thresholds must not be silently changed after observing a candidate.
+13. The Google transport cannot choose tools, production scope, persistence operations, model identity, or media identity.
+14. Evaluation reports value accuracy, evidence localization, disposition, projection, and continuity outcome independently.
+15. Benchmark thresholds are explicit and must not be relaxed after observing a model candidate.
 16. Benchmark provenance includes the exact truth-manifest SHA-256 and candidate model/version.
-17. Synthetic benchmark video must not contain semantic text that leaks the truth label to OCR-capable models.
-18. Generated media is local-only by default; publication/upload is an explicit operator action.
-19. Generated-media content digests identify exact bytes, while ffmpeg version is separately recorded because cross-version binary reproducibility is not assumed.
-20. Live media mapping is separate from immutable benchmark truth and must cryptographically bind to the exact truth-manifest bytes.
-21. Signed/private live URI values are not copied into benchmark reports; only the media-map digest is recorded.
-22. Live service claims require execution against the real service and are not inferred from mocks.
+17. Synthetic benchmark video must not contain semantic text that leaks truth labels to OCR-capable models.
+18. Generated media remains local-only by default; publication/upload is an explicit operator action.
+19. Live media mapping remains separate from immutable benchmark truth and cryptographically binds to exact truth bytes.
+20. Signed/private live URI values are not copied into benchmark reports.
+21. Live-service quality claims require execution against the real service and are not inferred from mocks.
+22. Locator fingerprints and content hashes are distinct provenance concepts; locator hashing must never be presented as proof of media bytes.
+23. Explicit MIME metadata is trusted ingest metadata, not model output. MIME/suffix disagreement fails closed.
+24. Local media hashing must not imply upload authority or weaken tenant/object-store authorization boundaries.
 
 ## Gates
 
@@ -139,32 +135,32 @@ Updated `README.md` so current capabilities, repository map, local commands, saf
 - **Gate D — editorial retrieval:** typed/bounded retrieval and SQL coverage exist; live official MCP execution remains pending.
 - **Gate E — failure honesty:** extraction/persistence/MCP/review paths fail closed structurally; abstentions cannot become false mismatches.
 - **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, and replacement isolation are implemented structurally; live RBAC/write-denial proof remains pending.
-- **Gate G — multimodal evidence:** governed extraction, provenance, retry safety, projection/replacement, Google transport, objective benchmark metrics, deterministic release gate, synthetic-media generation, generated-byte provenance, and a live external-media candidate runner are implemented; full local execution and live Gemini evaluation remain pending.
+- **Gate G — multimodal evidence:** governed extraction, provenance, retry safety, projection/replacement, Google transport, objective benchmark metrics, synthetic media, generated-byte provenance, live candidate runner, and trusted media provenance utilities are implemented; full local execution and live Gemini evaluation remain pending.
 
 ## Blockers / unknowns
 
-1. The execution container cannot currently resolve `github.com` for a local checkout.
-2. Actual ffmpeg/x264 rendering has not been executed in this runtime because a runnable checkout could not be obtained.
-3. No reachable authorized ClickHouse endpoint is available in this run.
-4. No Gemini/Vertex credentials or uploaded trusted benchmark media are available in this run.
-5. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
-6. Live `google-genai` model/schema/video behavior, latency, token usage, and provider failure modes remain unmeasured.
-7. The synthetic renderer is intentionally simple; whether Gemini can reliably infer mug-hand and jacket-state geometry from the generated clips is an empirical live-candidate question, not yet proven.
-8. Production-media provenance still fingerprints trusted URI + duration; true content hashing is currently implemented only for locally generated evaluation media.
-9. Extensionless signed-media endpoints still require explicit trusted MIME/ingest metadata before the Google transport can support them safely.
+1. A runnable local repository checkout is unavailable in this execution environment, so Python tests and ffmpeg rendering remain unexecuted here.
+2. No reachable authorized disposable ClickHouse endpoint is available in this run.
+3. No Gemini/Vertex credentials or uploaded trusted benchmark media are available in this run.
+4. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
+5. Live `google-genai` video/schema behavior, latency, token usage, and provider failure modes remain unmeasured.
+6. The synthetic renderer's real Gemini quality remains an empirical question.
+7. The new trusted MIME/content-hash metadata is not yet wired into `TakeExtractionRequest`, extraction persistence columns, or `GoogleGenAIExtractionTransport`; the current Google transport still requires a supported URI suffix.
+8. Local hashing detects byte-count changes but cannot guarantee a writer did not replace bytes with identical length during hashing; production ingest should hash immutable/staged files or use object-generation/version guarantees.
 
 ## Highest-priority backlog
 
-- Run the complete credential-free suite and `takekeeper-generate-fixture-media` in a normal checkout with ffmpeg, then inspect the generated clips and digests.
-- Upload only generated self-owned benchmark clips to a trusted private media location, create the external media map, run `takekeeper-live-benchmark` with Gemini/Vertex, and archive both provenance reports.
+- Carry trusted MIME type and optional content SHA-256/byte size through `TakeExtractionRequest` and extraction provenance persistence, migrating the ClickHouse schema safely.
+- Teach `GoogleGenAIExtractionTransport` to consume trusted explicit MIME metadata while retaining scheme/host/credential/video allow-list validation and MIME/suffix conflict checks.
+- Run the complete credential-free suite plus actual `ffmpeg` fixture generation in a normal checkout.
+- Run `takekeeper-live-benchmark` against one authorized Gemini/Vertex candidate using only generated self-owned media.
 - Execute projection-replacement and extraction-retry integration suites against disposable real ClickHouse.
-- Start official `ClickHouse/mcp-clickhouse` read-only, inject the actual transport, prove continuity/editorial queries, and record explicit write denial.
-- Add optional ingest-time media content hashing and trusted explicit MIME metadata for real production media.
-- Add repeat-run candidate comparison tooling once at least two real live benchmark reports exist, including latency/token/cost metadata gathered without weakening report secrecy.
+- Start official `ClickHouse/mcp-clickhouse` read-only, exercise TakeKeeper continuity/editorial operations, and record explicit write denial.
+- Add candidate comparison tooling once at least two real live benchmark reports exist.
 
 ## Single best next step
 
-**Run the full credential-free suite plus actual `ffmpeg` fixture generation in a normal checkout, then use the generated self-owned clips with `takekeeper-live-benchmark` against one authorized Gemini/Vertex model and archive the benchmark report together with `media-manifest.json`. This is now the shortest path to replacing structural confidence with measured multimodal quality.**
+**Wire the new trusted `mime_type`, optional `content_sha256`, and `byte_size` fields through `TakeExtractionRequest` → `ExtractionPrompt` → extraction provenance persistence → `GoogleGenAIExtractionTransport`. This removes the extensionless-private-media blocker and upgrades persisted extraction provenance from locator-only identity to real byte identity when ingest provides it, without requiring any external credential.**
 
 ## Relevant implementation references
 
