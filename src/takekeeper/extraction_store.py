@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -23,6 +22,9 @@ class ExtractionRunRecord:
     take_id: str
     media_uri: str
     media_fingerprint: str
+    media_mime_type: str | None
+    media_content_sha256: str | None
+    media_byte_size: int | None
     duration_ms: int
     extractor_model: str
     extractor_version: str
@@ -62,8 +64,9 @@ class ExtractionProvenanceStore(Protocol):
 def media_fingerprint(request: TakeExtractionRequest) -> str:
     """Stable provenance identity for the trusted media reference and clip duration.
 
-    This is not a content hash: callers should use an immutable/versioned media URI when
-    possible. The fingerprint prevents accidental loss of which media reference was used.
+    This is deliberately distinct from media_content_sha256. Locator identity is useful
+    even when a trusted ingest boundary cannot establish byte identity; when a content
+    digest is available, both values are persisted and immutable for a run.
     """
     payload = f"v1\0{request.media_uri}\0{request.duration_ms}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -112,6 +115,9 @@ def _records(
         take_id=request.take_id,
         media_uri=request.media_uri,
         media_fingerprint=media_fingerprint(request),
+        media_mime_type=request.media_mime_type,
+        media_content_sha256=request.media_content_sha256,
+        media_byte_size=request.media_byte_size,
         duration_ms=request.duration_ms,
         extractor_model=result.extractor_model,
         extractor_version=result.extractor_version,
@@ -188,8 +194,8 @@ class ClickHouseExtractionProvenanceStore:
 
     _RUN_COLUMNS = [
         "production_id", "scene_id", "take_id", "run_id", "media_uri",
-        "media_fingerprint", "duration_ms", "extractor_model", "extractor_version",
-        "prompt_schema_version", "created_at",
+        "media_fingerprint", "media_mime_type", "media_content_sha256", "media_byte_size",
+        "duration_ms", "extractor_model", "extractor_version", "prompt_schema_version", "created_at",
     ]
     _OBSERVATION_COLUMNS = [
         "production_id", "scene_id", "take_id", "run_id", "observation_id",
@@ -212,8 +218,8 @@ class ClickHouseExtractionProvenanceStore:
     def _run_payload(run: ExtractionRunRecord) -> tuple[Any, ...]:
         return (
             run.production_id, run.scene_id, run.take_id, run.run_id, run.media_uri,
-            run.media_fingerprint, run.duration_ms, run.extractor_model, run.extractor_version,
-            run.prompt_schema_version,
+            run.media_fingerprint, run.media_mime_type, run.media_content_sha256, run.media_byte_size,
+            run.duration_ms, run.extractor_model, run.extractor_version, run.prompt_schema_version,
         )
 
     @staticmethod
@@ -228,8 +234,9 @@ class ClickHouseExtractionProvenanceStore:
 
     def _existing_run(self, *, production_id: str, run_id: str) -> ExtractionRunRecord | None:
         result = self._client.query(
-            f"SELECT scene_id, take_id, media_uri, media_fingerprint, duration_ms, extractor_model, "
-            f"extractor_version, prompt_schema_version, created_at FROM {self._table('extraction_runs')} "
+            f"SELECT scene_id, take_id, media_uri, media_fingerprint, media_mime_type, "
+            f"media_content_sha256, media_byte_size, duration_ms, extractor_model, extractor_version, "
+            f"prompt_schema_version, created_at FROM {self._table('extraction_runs')} "
             "WHERE production_id = {production_id:String} AND run_id = {run_id:String}",
             parameters={"production_id": production_id, "run_id": run_id},
         )
@@ -246,11 +253,14 @@ class ClickHouseExtractionProvenanceStore:
             take_id=str(row[1]),
             media_uri=str(row[2]),
             media_fingerprint=str(row[3]),
-            duration_ms=int(row[4]),
-            extractor_model=str(row[5]),
-            extractor_version=str(row[6]),
-            prompt_schema_version=str(row[7]),
-            created_at=row[8],
+            media_mime_type=None if row[4] is None else str(row[4]),
+            media_content_sha256=None if row[5] is None else str(row[5]),
+            media_byte_size=None if row[6] is None else int(row[6]),
+            duration_ms=int(row[7]),
+            extractor_model=str(row[8]),
+            extractor_version=str(row[9]),
+            prompt_schema_version=str(row[10]),
+            created_at=row[11],
         )
 
     def _existing_observation(
@@ -363,17 +373,21 @@ class ClickHouseExtractionProvenanceStore:
 
     def list_runs(self, *, production_id: str, scene_id: str, take_id: str) -> list[ExtractionRunRecord]:
         result = self._client.query(
-            f"SELECT run_id, media_uri, media_fingerprint, duration_ms, extractor_model, "
-            f"extractor_version, prompt_schema_version, created_at FROM {self._table('extraction_runs')} "
+            f"SELECT run_id, media_uri, media_fingerprint, media_mime_type, media_content_sha256, "
+            f"media_byte_size, duration_ms, extractor_model, extractor_version, prompt_schema_version, created_at "
+            f"FROM {self._table('extraction_runs')} "
             "WHERE production_id = {production_id:String} AND scene_id = {scene_id:String} "
             "AND take_id = {take_id:String} ORDER BY created_at, run_id",
             parameters={"production_id": production_id, "scene_id": scene_id, "take_id": take_id},
         )
         return [ExtractionRunRecord(
             run_id=str(row[0]), production_id=production_id, scene_id=scene_id, take_id=take_id,
-            media_uri=str(row[1]), media_fingerprint=str(row[2]), duration_ms=int(row[3]),
-            extractor_model=str(row[4]), extractor_version=str(row[5]), prompt_schema_version=str(row[6]),
-            created_at=row[7],
+            media_uri=str(row[1]), media_fingerprint=str(row[2]),
+            media_mime_type=None if row[3] is None else str(row[3]),
+            media_content_sha256=None if row[4] is None else str(row[4]),
+            media_byte_size=None if row[5] is None else int(row[5]), duration_ms=int(row[6]),
+            extractor_model=str(row[7]), extractor_version=str(row[8]), prompt_schema_version=str(row[9]),
+            created_at=row[10],
         ) for row in result.result_set]
 
     def list_observations(self, *, production_id: str, run_id: str) -> list[ExtractedObservationRecord]:
