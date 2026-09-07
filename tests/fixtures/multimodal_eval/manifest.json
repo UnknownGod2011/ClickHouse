@@ -1,0 +1,197 @@
+{
+  "schema_version": "takekeeper-multimodal-eval-v1",
+  "production_id": "demo-production",
+  "scene_id": "scene-12",
+  "extractor_model": "fixture-model",
+  "extractor_version": "fixture-v1",
+  "baselines": [
+    {
+      "entity_id": "hero_mug",
+      "property_key": "hand",
+      "baseline_value": "left",
+      "source_take_id": "baseline-take"
+    },
+    {
+      "entity_id": "maya",
+      "property_key": "jacket_state",
+      "baseline_value": "zipped",
+      "source_take_id": "baseline-take"
+    }
+  ],
+  "cases": [
+    {
+      "name": "matching_clear_take",
+      "take_id": "take-001",
+      "media_uri": "fixture://take-001.mp4",
+      "duration_ms": 10000,
+      "response": {
+        "observations": [
+          {
+            "entity_id": "hero_mug",
+            "property_key": "hand",
+            "normalized_value": "left",
+            "raw_model_value": "left hand",
+            "evidence_start_ms": 1500,
+            "evidence_end_ms": 4300,
+            "confidence": 0.96,
+            "source_type": "vision",
+            "evidence_rationale_short": "Mug remains visibly in the left hand.",
+            "visibility_state": "clear",
+            "temporal_support": "sustained"
+          },
+          {
+            "entity_id": "maya",
+            "property_key": "jacket_state",
+            "normalized_value": "zipped",
+            "raw_model_value": "jacket zipped",
+            "evidence_start_ms": 1100,
+            "evidence_end_ms": 8500,
+            "confidence": 0.95,
+            "source_type": "vision",
+            "evidence_rationale_short": "Jacket front remains visibly zipped.",
+            "visibility_state": "clear",
+            "temporal_support": "sustained"
+          }
+        ]
+      },
+      "truth": [
+        {
+          "entity_id": "hero_mug",
+          "property_key": "hand",
+          "normalized_value": "left",
+          "evidence_start_ms": 1400,
+          "evidence_end_ms": 4400,
+          "expected_disposition": "machine_high_confidence",
+          "expected_projected": true,
+          "expected_finding_status": "none"
+        },
+        {
+          "entity_id": "maya",
+          "property_key": "jacket_state",
+          "normalized_value": "zipped",
+          "evidence_start_ms": 1000,
+          "evidence_end_ms": 8600,
+          "expected_disposition": "machine_high_confidence",
+          "expected_projected": true,
+          "expected_finding_status": "none"
+        }
+      ]
+    },
+    {
+      "name": "clear_continuity_mismatch",
+      "take_id": "take-002",
+      "media_uri": "fixture://take-002.mp4",
+      "duration_ms": 10000,
+      "response": {
+        "observations": [
+          {
+            "entity_id": "hero_mug",
+            "property_key": "hand",
+            "normalized_value": "right",
+            "raw_model_value": "right hand",
+            "evidence_start_ms": 2200,
+            "evidence_end_ms": 5100,
+            "confidence": 0.94,
+            "source_type": "vision",
+            "evidence_rationale_short": "Mug remains visibly in the right hand.",
+            "visibility_state": "clear",
+            "temporal_support": "sustained"
+          },
+          {
+            "entity_id": "maya",
+            "property_key": "jacket_state",
+            "normalized_value": "open",
+            "raw_model_value": "jacket open",
+            "evidence_start_ms": 1800,
+            "evidence_end_ms": 7900,
+            "confidence": 0.93,
+            "source_type": "vision",
+            "evidence_rationale_short": "Jacket remains visibly open through the take.",
+            "visibility_state": "clear",
+            "temporal_support": "sustained"
+          }
+        ]
+      },
+      "truth": [
+        {
+          "entity_id": "hero_mug",
+          "property_key": "hand",
+          "normalized_value": "right",
+          "evidence_start_ms": 2000,
+          "evidence_end_ms": 5200,
+          "expected_disposition": "machine_high_confidence",
+          "expected_projected": true,
+          "expected_finding_status": "mismatch"
+        },
+        {
+          "entity_id": "maya",
+          "property_key": "jacket_state",
+          "normalized_value": "open",
+          "evidence_start_ms": 1700,
+          "evidence_end_ms": 8000,
+          "expected_disposition": "machine_high_confidence",
+          "expected_projected": true,
+          "expected_finding_status": "mismatch"
+        }
+      ]
+    },
+    {
+      "name": "occluded_abstention",
+      "take_id": "take-003",
+      "media_uri": "fixture://take-003.mp4",
+      "duration_ms": 10000,
+      "response": {
+        "observations": [
+          {
+            "entity_id": "hero_mug",
+            "property_key": "hand",
+            "normalized_value": "unknown",
+            "raw_model_value": "hand not reliably visible",
+            "evidence_start_ms": 3000,
+            "evidence_end_ms": 6200,
+            "confidence": 0.45,
+            "source_type": "vision",
+            "evidence_rationale_short": "The mug-hand relationship is occluded.",
+            "visibility_state": "occluded",
+            "temporal_support": "unknown"
+          },
+          {
+            "entity_id": "maya",
+            "property_key": "jacket_state",
+            "normalized_value": "unknown",
+            "raw_model_value": "jacket front obscured",
+            "evidence_start_ms": 2600,
+            "evidence_end_ms": 7000,
+            "confidence": 0.40,
+            "source_type": "vision",
+            "evidence_rationale_short": "Jacket closure is not visible enough to classify.",
+            "visibility_state": "occluded",
+            "temporal_support": "unknown"
+          }
+        ]
+      },
+      "truth": [
+        {
+          "entity_id": "hero_mug",
+          "property_key": "hand",
+          "normalized_value": "unknown",
+          "evidence_start_ms": 2800,
+          "evidence_end_ms": 6500,
+          "expected_disposition": "needs_confirmation",
+          "expected_projected": false,
+          "expected_finding_status": "insufficient_evidence"
+        },
+        {
+          "entity_id": "maya",
+          "property_key": "jacket_state",
+          "normalized_value": "unknown",
+          "evidence_start_ms": 2500,
+          "evidence_end_ms": 7200,
+          "expected_disposition": "needs_confirmation",
+          "expected_projected": false,
+          "expected_finding_status": "insufficient_evidence"
+        }
+      ]
+    }
+  ]
+}
