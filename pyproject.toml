@@ -17,6 +17,7 @@ gemini = ["google-genai>=1,<2"]
 
 [project.scripts]
 takekeeper-benchmark = "takekeeper.benchmark_cli:main"
+takekeeper-generate-fixture-media = "takekeeper.fixture_media:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
