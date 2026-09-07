@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from .clickhouse_memory import ClickHouseClientLike
-from .extraction import ExtractionRunResult, GovernedMultimodalExtractor, TakeExtractionRequest
+from .extraction import ExtractionRunResult, TakeExtractionRequest
 from .extraction_store import ExtractionProvenanceStore, ExtractionRunRecord
 from .schema_preflight import ClickHouseSchemaNotReady, SchemaPreflightReport, require_extraction_schema_ready
 
