@@ -2,80 +2,88 @@
 
 ## Current status
 
-TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed Gemini/Vertex multimodal extraction, strict continuity projection, deterministic synthetic media, trusted media provenance, bounded schema readiness, schema-gated ingestion, an authenticated WSGI ingest API, secret-safe production composition, Google OIDC/IAP ingress identity, and now an explicit defense-in-depth subject authorization boundary for Google-signed identities.
+TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed Gemini/Vertex multimodal extraction, strict continuity projection, deterministic synthetic media, trusted media provenance, bounded schema readiness, schema-gated ingestion, an authenticated WSGI ingest API, secret-safe production composition, Google OIDC/IAP ingress identity, defense-in-depth subject authorization, and now a bounded per-actor ingestion admission boundary before expensive Gemini/ClickHouse work.
 
-This run closed the highest-priority authorization gap: a correctly signed Google/IAP token no longer automatically grants production ingest authority. Production Google identity modes now require a deployment-owned verified-subject-to-TakeKeeper-actor mapping.
+This run closed the highest-priority resource-amplification gap: an authenticated/authorized caller can no longer create unbounded concurrent extraction work inside a TakeKeeper process. Admission is keyed only by the trusted actor returned by the identity provider and happens before request-body parsing.
 
 ## Inspected this run
 
 - Read this `progress.md` completely before deciding what to change.
-- Inspected `src/takekeeper/google_identity.py`, `src/takekeeper/production_ingest.py`, `tests/test_google_identity.py`, `tests/test_production_ingest.py`, and `PRODUCTION_INGEST.md`.
-- Confirmed existing Google identity verification already pins issuer/audience/time and maps identity only from verified `sub`.
-- Confirmed the remaining gap was authorization: any otherwise-valid signed Google/IAP subject was accepted even if Cloud Run IAM/IAP policy were accidentally broadened.
-- Confirmed authentication still occurs before ingest request-body reads and did not alter that boundary.
+- Inspected repository metadata and confirmed `UnknownGod2011/ClickHouse` on `main`.
+- Inspected `src/takekeeper/ingest_api.py`, `src/takekeeper/review_api.py`, `src/takekeeper/production_ingest.py`, `src/takekeeper/__init__.py`, `tests/test_ingest_api.py`, and the relevant production-composition tests.
+- Confirmed authentication already happened before request-body reads and returned a stable trusted actor ID.
+- Confirmed production composition already instantiates `IngestHttpApp`, so a safe default guard inside that boundary protects static, Google OIDC, and IAP production composition without requiring a separate deployment code path.
+- Confirmed the remaining gap was admission control: any authorized actor could previously fan out unlimited simultaneous Gemini extraction and ClickHouse persistence work.
 
 ## Exact changes made this run
 
-### 1. Subject authorization in Google identity adapters
+### 1. Thread-safe per-actor admission guard
 
-Updated `src/takekeeper/google_identity.py`:
+Added `src/takekeeper/ingest_admission.py` with `ActorIngestAdmissionGuard`:
 
-- added optional bounded `authorized_subjects: Mapping[str, str]` to `GoogleOidcIdentityProvider` and `IapIdentityProvider`;
-- mapping keys are verified JWT `sub` values; mapping values are bounded TakeKeeper actor IDs;
-- signature/issuer/audience/time validation happens before authorization lookup;
-- signed-but-unauthorized subjects fail with the same fixed `PermissionError("invalid credentials")` used for invalid credentials;
-- unauthorized subject values are never echoed in errors;
-- map size is bounded to 256 entries and subject/actor values to 512 characters;
-- empty/invalid mappings fail configuration validation;
-- direct embedders may still omit the map when using these classes as pure authentication primitives, but production composition below requires it.
+- key is only the authenticated actor ID returned by the trusted identity provider;
+- no production/scene/take/media/property/request metadata can be supplied as a limiter key;
+- default per-actor concurrent cap is 2 active requests;
+- default sliding-window cap is 30 admitted requests per 60 seconds;
+- tracked actor state is bounded to 512 identities by default;
+- limiter configuration itself is bounded to prevent pathological values;
+- actor IDs are bounded and control characters are rejected;
+- implementation is thread-safe using a process-local lock;
+- admission uses an idempotent lease/context-manager so concurrency is released on both success and exceptions;
+- stale idle actor state is pruned after its rate window expires;
+- overload reasons remain internal and callers receive a fixed coarse response;
+- explicit documentation states this is per-process defense in depth, not a distributed global quota.
 
-### 2. Production Google identity policy is mandatory
+Added `IngestAdmissionSnapshot` with aggregate-only counters:
 
-Updated `src/takekeeper/production_ingest.py`:
+- `active_requests`;
+- `admitted_total`;
+- `rejected_concurrency_total`;
+- `rejected_rate_total`;
+- `rejected_capacity_total`.
 
-- added `TAKEKEEPER_INGEST_SUBJECT_MAP` for `google_oidc` and `iap` modes;
-- format is a deployment-owned JSON object mapping verified subjects to trusted TakeKeeper actor IDs;
-- production Google identity modes fail configuration parsing if the map is absent, empty, malformed, oversized, or contains invalid keys/values;
-- static bearer mode rejects `TAKEKEEPER_INGEST_SUBJECT_MAP` so authority modes cannot be mixed;
-- map payload is `repr=False` in `ProductionIngestConfig` to avoid routine configuration logging enumerating authorized identities;
-- JSON policy is bounded to 16 KiB and 256 entries;
-- default production identity factory passes the map into the OIDC/IAP verifier adapters;
-- existing Google audience requirements, static-secret rejection, signed IAP assertion header, schema preflight, and startup fail-closed behavior remain intact.
+No actor/tenant/media labels are exposed.
+
+### 2. Admission integrated into the HTTP boundary before body parsing
+
+Updated `src/takekeeper/ingest_api.py`:
+
+- every `IngestHttpApp` now receives a safe `ActorIngestAdmissionGuard` by default;
+- authentication still occurs first;
+- the actor returned by authentication is the only admission key;
+- the admission lease is acquired before `_read_json_body(...)`, request construction, Gemini extraction, or ClickHouse persistence;
+- overloaded work returns HTTP 429 with exactly `{\"error\":\"ingestion overloaded\"}`;
+- request bodies are not read for requests rejected at the concurrency/rate boundary;
+- lease cleanup is automatic if body validation, extraction, persistence, or any downstream step raises;
+- existing liveness/readiness behavior remains unchanged;
+- added `GET /metrics` with aggregate JSON admission counters only.
+
+Because production composition already constructs `IngestHttpApp`, these safe defaults are now active for static bearer, Google OIDC, and IAP deployments without additional production bootstrap changes.
 
 ### 3. Regression coverage
 
-Updated `tests/test_google_identity.py` with coverage for:
+Added `tests/test_ingest_admission.py` covering:
 
-- explicitly authorized Google subject mapping to a deployment actor;
-- correctly signed but unauthorized Google subject denial;
-- correctly signed but unauthorized IAP subject denial;
-- unauthorized subject redaction;
-- empty authorization map rejection;
-- invalid mapped actor rejection without value echo.
+- per-actor concurrent isolation: one saturated actor does not consume another actor's per-actor slot;
+- same-actor concurrent rejection;
+- sliding-window request rejection and expiry;
+- bounded tracked-actor capacity and recovery after idle expiry;
+- HTTP overload rejection after authentication but before body reads using a body object that fails if read;
+- no service/Gemini-equivalent work on overload;
+- concurrency lease release after an invalid request;
+- aggregate metrics that contain no authenticated actor ID.
 
-Added `tests/test_subject_authorization.py` covering:
+Existing `tests/test_ingest_api.py` remains compatible because each app now receives its own default guard and the existing tests do not exceed the safe defaults within a single app instance.
 
-- production Google mode requiring an explicit subject map;
-- JSON subject-to-actor parsing;
-- subject policy redaction from config `repr()`;
-- static mode rejecting Google subject policy;
-- malformed policy errors not echoing contents;
-- IAP using the same explicit authorization contract.
+### 4. Public API and documentation
 
-Updated `tests/test_production_ingest.py` so existing OIDC/IAP composition cases supply the newly required subject policy and continue asserting the correct credential header behavior.
+Updated `src/takekeeper/__init__.py` to export:
 
-### 4. Documentation
+- `ActorIngestAdmissionGuard`;
+- `IngestAdmissionSnapshot`;
+- `IngestOverloaded`.
 
-Added `GOOGLE_SUBJECT_AUTHORIZATION.md` documenting:
-
-- authenticated identity vs application authorization;
-- environment configuration examples for Cloud Run OIDC and IAP;
-- bounded/fail-closed behavior;
-- subject-map rotation guidance;
-- why upstream Cloud Run IAM/IAP authorization is still required;
-- credential-free test coverage and live-environment limitations.
-
-`PRODUCTION_INGEST.md` remains structurally accurate for the identity modes but its examples do not yet include the newly mandatory subject-map variable; refresh that document and the README in the next documentation pass.
+Added `INGEST_ADMISSION.md` documenting authority boundaries, defaults, fixed overload semantics, aggregate telemetry, multi-instance limitations, and credential-free regression coverage.
 
 ### 5. Repository safety
 
@@ -88,36 +96,29 @@ Added `GOOGLE_SUBJECT_AUTHORIZATION.md` documenting:
 
 ## Validation / results
 
-Implementation commits before this handoff update:
+Implementation commits this run:
 
-- `11097ed739c0259bcdec11a452c763d03f1915f4` — require explicit Google subject authorization policy in identity adapters;
-- `b49cce51b67561ed3a344689ed691631da3aa817` — enforce production Google ingest subject mapping;
-- `5567d9b88acaf698b68540f54cf4c742d2e07035` — signed-subject authorization regression tests;
-- `3faacb6e371a6867ce67e3d25b5e74c41a8f3bab` — production subject policy tests;
-- `94d77b1796c73df236fd4b3d8bf6724956f85845` — update production composition tests for mandatory subject policy;
-- `cbaf5159a5ad413dfea8fd23c5a3c7ecf000bffa` — subject authorization operations/security documentation.
+- `c4ce44b6bee08bde641c0d7e365c17b9d08d9c90` — add per-actor ingest admission guard, HTTP integration, and regression tests;
+- `6abc77bf27c64272692f4cdab9f434d322e51a41` — export admission primitives;
+- `0d95db9319fe5c17074ccb5fdd68e47eb6f1dc0a` — document the admission boundary.
 
 Executable validation attempted:
 
 ```text
-git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git /tmp/takekeeper-check
-cd /tmp/takekeeper-check
-PYTHONPATH=src python -m unittest \
-  tests.test_google_identity \
-  tests.test_subject_authorization \
-  tests.test_production_ingest -v
+git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git /tmp/takekeeper
 ```
 
-The container again failed at clone with `Could not resolve host: github.com`, so Python never started. This is an environment/network blocker, not a test result. I therefore do **not** claim these tests pass. GitHub Actions were deliberately not used as a workaround.
+The execution container again failed with `Could not resolve host: github.com`, so a runnable checkout could not be created and Python did not execute. This is an environment/network blocker, not a test result. I therefore do **not** claim the new tests pass. GitHub Actions were deliberately not used as a workaround.
 
-Structural review completed through the GitHub connector:
+Structural validation completed through the GitHub connector:
 
-- production Google modes now require `TAKEKEEPER_INGEST_SUBJECT_MAP`;
-- verified `sub` is the only lookup key;
-- signed but unmapped subjects fail closed;
-- static bearer and Google subject-map authority configuration are mutually exclusive;
-- the subject map is absent from `ProductionIngestConfig.__repr__`;
-- IAP continues to use only `X-Goog-IAP-JWT-Assertion` as its credential source.
+- the implementation commit applies cleanly to `main`;
+- authentication remains before admission and body parsing;
+- admission receives only the trusted actor returned by `ReviewerIdentityProvider.authenticate(...)`;
+- HTTP 429 is mapped explicitly;
+- aggregate metrics contain no actor/subject/production/scene/take/media labels;
+- the guard is default-constructed by `IngestHttpApp`, which means current production composition is protected without a separate bootstrap path;
+- public exports reference the new module/classes now present on `main`.
 
 ## Decisions locked
 
@@ -137,6 +138,9 @@ Structural review completed through the GitHub connector:
 14. Google/IAP production authorization requires explicit deployment-owned verified-subject mapping; token authenticity alone is insufficient.
 15. Google identity and static shared-secret authority configuration are mutually exclusive.
 16. Authentication must continue to happen before ingest request-body reads.
+17. Ingest admission is keyed only by trusted authenticated actor identity, never caller-controlled production/media metadata.
+18. Process-local admission remains mandatory defense in depth even when a deployment adds a distributed/upstream quota.
+19. Admission telemetry must remain aggregate/low-cardinality and must not enumerate actors or media scope.
 
 ## Gates
 
@@ -144,33 +148,36 @@ Structural review completed through the GitHub connector:
 - **Gate B — continuity correctness:** deterministic comparison, persistence, governed projection, and stale-state convergence are implemented.
 - **Gate C — evidence/review:** durable evidence, stable finding identity, append-only review, authenticated API, and operator console are implemented.
 - **Gate D — editorial retrieval:** typed/bounded retrieval and SQL coverage exist; live official MCP execution remains pending.
-- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness/ingest-bootstrap/HTTP/composition/auth paths fail closed structurally.
-- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review/ingest, immutable retry identity, metadata-only preflight, server-owned extraction policy, secret-safe composition, Google signed-token verification, IAP assertion verification, and defense-in-depth Google subject authorization are implemented structurally; live RBAC/write-denial/IAP-network proof remains pending.
-- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME/byte identity, schema support, persistence, rollout-skew detection, HTTP ingress, and production composition exist; live execution remains pending.
+- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness/ingest-bootstrap/HTTP/composition/auth/admission paths fail closed structurally.
+- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review/ingest, immutable retry identity, metadata-only preflight, server-owned extraction policy, secret-safe composition, Google signed-token verification, IAP assertion verification, defense-in-depth Google subject authorization, and bounded per-actor local admission are implemented structurally; live RBAC/write-denial/IAP-network/distributed-quota proof remains pending.
+- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME/byte identity, schema support, persistence, rollout-skew detection, HTTP ingress, production composition, and local admission protection exist; live execution remains pending.
 
 ## Blockers / unknowns
 
 1. The execution container cannot resolve `github.com`, so normal checkout and Python test execution remain unavailable from this run.
 2. No reachable authorized disposable ClickHouse endpoint is available.
 3. No Gemini/Vertex credentials or trusted uploaded benchmark media are available.
-4. No authorized Cloud Run/IAP environment is available to empirically verify real signed-token headers, certificate retrieval/cache behavior, audience values, ingress policy, bypass resistance, or subject-map behavior end-to-end.
+4. No authorized Cloud Run/IAP environment is available to empirically verify real signed-token headers, certificate retrieval/cache behavior, audience values, ingress policy, bypass resistance, subject-map behavior, or multi-replica admission behavior end-to-end.
 5. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
 6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql`; startup preflight detects skew and refuses ingestion.
 7. Local SHA-256 hashing cannot prove object immutability if another writer replaces same-length bytes during the read; production ingest should hash immutable/versioned objects.
-8. Rate limiting, TLS termination/network policy, WSGI server process behavior, and Cloud Run/IAP upstream authorization policy remain deployment responsibilities and are not yet empirically exercised.
+8. TLS termination/network policy, WSGI server process behavior, Cloud Run/IAP upstream authorization policy, and distributed/global quotas remain deployment responsibilities and are not yet empirically exercised.
+9. Current admission defaults are safe but not yet environment-configurable through `ProductionIngestConfig`; operators needing different throughput must currently construct `IngestHttpApp` with an explicit guard.
+10. `GET /metrics` currently exposes aggregate JSON rather than Prometheus exposition format; this is safe/low-cardinality but not yet directly scrape-native.
 
 ## Highest-priority backlog
 
-- Run the targeted identity/subject-policy/composition suites and then the full credential-free suite in a runnable checkout; fix concrete failures.
-- Refresh `PRODUCTION_INGEST.md` and `README.md` so production examples explicitly include `TAKEKEEPER_INGEST_SUBJECT_MAP` and explain authenticated-vs-authorized identity.
-- Add bounded request-rate / concurrency protection at the ingest boundary or a deployment adapter so an authenticated principal cannot accidentally fan out unlimited Gemini work.
+- Run `tests.test_ingest_admission`, `tests.test_ingest_api`, identity/subject-policy/composition suites, and then the full credential-free suite in a runnable checkout; fix concrete failures.
+- Add bounded environment configuration for production admission limits and pass an explicit guard from `build_ingest_deployment_from_env`.
+- Add a scrape-native Prometheus exposition endpoint or adapter while preserving fixed cardinality and no actor/tenant/media labels.
+- Refresh `PRODUCTION_INGEST.md` and `README.md` so examples include `TAKEKEEPER_INGEST_SUBJECT_MAP` plus the new admission boundary.
 - Run production composition plus migration 002/schema preflight against a disposable authorized ClickHouse instance and verify readiness transitions empirically.
-- Exercise real Cloud Run OIDC and IAP ingress, including wrong audience, unauthorized-but-signed subject, direct-service bypass attempts, expired tokens, and compatibility-header spoofing.
+- Exercise real Cloud Run OIDC and IAP ingress, including wrong audience, unauthorized-but-signed subject, direct-service bypass attempts, expired tokens, compatibility-header spoofing, and multi-replica quota behavior.
 - Start official `ClickHouse/mcp-clickhouse` read-only, exercise continuity/editorial operations, and record explicit write denial.
 
 ## Single best next step
 
-**Add a bounded per-actor ingestion concurrency/rate guard around the authenticated HTTP boundary before Gemini extraction. It should key only on the trusted authenticated actor, reject excess work with a coarse response, never use tenant/media IDs as untrusted rate keys, expose low-cardinality metrics, and include credential-free tests proving an authorized caller cannot create unbounded concurrent Gemini/ClickHouse work.**
+**Wire the admission policy explicitly into `ProductionIngestConfig`: add bounded environment settings for per-actor concurrency and sliding-window rate, construct the guard in `build_ingest_deployment_from_env`, and add production-composition tests proving invalid/extreme limits fail before provider factories while configured limits actually govern authenticated HTTP ingestion.**
 
 ## Relevant implementation references
 
