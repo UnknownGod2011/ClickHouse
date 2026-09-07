@@ -18,6 +18,7 @@ This repository is a personal open-source project.
 - Stable deterministic finding IDs, append-only human review history, authenticated review API, and a dependency-free same-origin operator console.
 - A credential-free multimodal benchmark that measures normalized-value accuracy, temporal evidence IoU, extraction disposition, projection eligibility, final continuity status, and unsupported assertions independently.
 - A deterministic benchmark CLI/release gate that emits stable JSON and exits non-zero on quality regression.
+- A local synthetic-media generator that renders text-free self-owned MP4 fixtures from the immutable benchmark truth and records manifest/artifact SHA-256 provenance without committing video binaries.
 
 Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered proven after execution against authorized real services; fixture tests are not presented as live-service validation.
 
@@ -28,6 +29,7 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 - `src/takekeeper/extraction_projection.py` — strict evidence-to-current-continuity projection boundary.
 - `src/takekeeper/multimodal_benchmark.py` — independent benchmark metrics.
 - `src/takekeeper/benchmark_cli.py` — stable JSON benchmark runner and release gate.
+- `src/takekeeper/fixture_media.py` — local deterministic synthetic-video renderer and content-provenance manifest.
 - `src/takekeeper/continuity.py` — deterministic continuity comparison.
 - `src/takekeeper/memory.py` / `clickhouse_memory.py` — memory protocol and ClickHouse persistence.
 - `src/takekeeper/extraction_store.py` — extraction provenance/reconciliation persistence.
@@ -38,6 +40,7 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 - `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and deterministic Scene 28 demo fixture.
 - `tests/fixtures/multimodal_eval/manifest.json` — labeled credential-free multimodal benchmark manifest.
 - `BENCHMARK.md` — benchmark semantics, thresholds, and usage.
+- `FIXTURE_MEDIA.md` — generated-video workflow and content-digest provenance contract.
 - `GEMINI_INTEGRATION.md` — provider setup and transport trust boundary.
 - `progress.md` — exact implementation handoff and next step.
 
@@ -68,6 +71,24 @@ takekeeper-benchmark tests/fixtures/multimodal_eval/manifest.json
 The benchmark emits `takekeeper-multimodal-benchmark-report-v1` JSON to stdout. Exit code `0` means all thresholds passed, `1` means the benchmark executed but quality regressed, and `2` means the benchmark input/configuration was invalid. Use `--output <path>` to archive the exact same stable report locally. See `BENCHMARK.md` for the full metric contract.
 
 The checked-in deterministic gate currently requires exact value/disposition/projection/finding correctness, evidence IoU@0.50 of 100%, mean evidence IoU of at least 0.80, and zero unsupported assertions. Real-model thresholds may be changed explicitly for experiments, but the report records the thresholds used; do not relabel truth after observing a model candidate.
+
+## Generate self-owned benchmark video
+
+`ffmpeg` with `libx264` is required; no cloud credentials are needed:
+
+```bash
+PYTHONPATH=src python -m takekeeper.fixture_media \
+  tests/fixtures/multimodal_eval/manifest.json
+```
+
+After installation, the equivalent command is:
+
+```bash
+takekeeper-generate-fixture-media \
+  tests/fixtures/multimodal_eval/manifest.json
+```
+
+Generated clips and `media-manifest.json` land under `.takekeeper/generated-eval-media/` by default. That directory is ignored by Git. The renderer does not place semantic labels in the video; it represents mug-hand state, jacket state, and deliberate occlusion using geometry only. The generated manifest records the exact truth-manifest digest, ffmpeg provenance, artifact sizes, and SHA-256 of every MP4. See `FIXTURE_MEDIA.md`.
 
 ## ClickHouse application path
 
@@ -146,13 +167,14 @@ The deterministic `glass-house` Scene 28 fixture contains continuity and editori
 - Missing/abstaining evidence cannot become a false continuity mismatch.
 - Trusted writes and agent-facing MCP reads use separate credentials and capabilities.
 - Dynamic database identifiers are validated; values are parameter-bound.
+- Generated benchmark media is local-only by default and has no automatic upload path.
 - No credential, API key, raw private media, or secret belongs in the repository or benchmark reports.
 
 ## Next production gates
 
-1. Run the full credential-free suite in a normal checkout and fix any concrete failures.
-2. Add fixed self-owned/generated labeled clips corresponding to the benchmark truth without tuning labels after model output.
-3. Execute a live Gemini/Vertex candidate against those clips and archive its benchmark JSON.
+1. Run the full credential-free suite plus actual fixture-media rendering in a normal checkout and fix any concrete failures.
+2. Add a live-candidate benchmark path that replaces deterministic fixture responses with `GoogleGenAIExtractionTransport` while preserving the exact truth manifest and report schema.
+3. Upload only the generated self-owned clips to a trusted private media location, execute one live Gemini/Vertex candidate, and archive both benchmark JSON and generated-media digests.
 4. Execute the disposable ClickHouse integration suites against a real authorized instance.
 5. Start official `ClickHouse/mcp-clickhouse` read-only and record actual auth/transport/version behavior, query latency, result shape, and explicit write denial.
 
