@@ -40,6 +40,33 @@ class GoogleOidcIdentityProviderTests(unittest.TestCase):
         self.assertEqual(seen, {"token": "secret.jwt.value", "audience": AUDIENCE})
         self.assertNotIn("ignored@example.com", actor)
 
+    def test_authorized_subject_maps_to_deployment_actor(self):
+        provider = GoogleOidcIdentityProvider(
+            AUDIENCE,
+            verifier=lambda *_: claims(issuer="https://accounts.google.com"),
+            clock=lambda: NOW,
+            authorized_subjects={"subject-123": "production-ingest-worker"},
+        )
+        self.assertEqual(
+            provider.authenticate("Bearer valid.jwt"),
+            "production-ingest-worker",
+        )
+
+    def test_valid_signed_but_unauthorized_subject_fails_closed(self):
+        provider = GoogleOidcIdentityProvider(
+            AUDIENCE,
+            verifier=lambda *_: claims(
+                issuer="https://accounts.google.com",
+                subject="signed-but-not-authorized",
+            ),
+            clock=lambda: NOW,
+            authorized_subjects={"subject-123": "production-ingest-worker"},
+        )
+        with self.assertRaises(PermissionError) as ctx:
+            provider.authenticate("Bearer valid.jwt")
+        self.assertEqual(str(ctx.exception), "invalid credentials")
+        self.assertNotIn("signed-but-not-authorized", str(ctx.exception))
+
     def test_invalid_audience_fails_closed_without_token_or_verifier_detail(self):
         token = "sensitive.jwt.value"
 
@@ -117,6 +144,18 @@ class IapIdentityProviderTests(unittest.TestCase):
         self.assertEqual(provider.authenticate("iap.jwt.assertion"), "iap:subject-123")
         self.assertEqual(seen, {"token": "iap.jwt.assertion", "audience": AUDIENCE})
 
+    def test_iap_authorization_mapping_is_enforced_after_signature_verification(self):
+        provider = IapIdentityProvider(
+            AUDIENCE,
+            verifier=lambda *_: claims(issuer=IAP_ISSUER, subject="not-allowed"),
+            clock=lambda: NOW,
+            authorized_subjects={"subject-123": "iap-ingest-user"},
+        )
+        with self.assertRaises(PermissionError) as ctx:
+            provider.authenticate("iap.jwt.assertion")
+        self.assertEqual(str(ctx.exception), "invalid credentials")
+        self.assertNotIn("not-allowed", str(ctx.exception))
+
     def test_iap_rejects_google_oidc_issuer(self):
         provider = IapIdentityProvider(
             AUDIENCE,
@@ -144,6 +183,19 @@ class GoogleIdentityConfigurationTests(unittest.TestCase):
     def test_clock_skew_is_bounded(self):
         with self.assertRaises(GoogleIdentityConfigurationError):
             IapIdentityProvider(AUDIENCE, clock_skew_seconds=301)
+
+    def test_empty_authorized_subject_map_is_invalid(self):
+        with self.assertRaises(GoogleIdentityConfigurationError):
+            GoogleOidcIdentityProvider(AUDIENCE, authorized_subjects={})
+
+    def test_invalid_actor_mapping_is_rejected_without_value_echo(self):
+        with self.assertRaises(GoogleIdentityConfigurationError) as ctx:
+            GoogleOidcIdentityProvider(
+                AUDIENCE,
+                authorized_subjects={"subject-123": "bad\nactor"},
+            )
+        self.assertEqual(str(ctx.exception), "invalid authorized actor")
+        self.assertNotIn("bad", str(ctx.exception))
 
     def test_expected_google_issuers_are_fixed(self):
         self.assertEqual(
