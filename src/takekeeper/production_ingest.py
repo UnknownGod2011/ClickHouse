@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
-from .extraction import HERO_PROPERTY_REGISTRY, GovernedMultimodalExtractor
+from .extraction import HERO_PROPERTY_REGISTRY, GovernedMultimodalExtractor, PropertySpec
 from .extraction_store import ClickHouseExtractionProvenanceStore
 from .google_genai_transport import (
     GoogleGenAIExtractionTransport,
@@ -115,7 +115,6 @@ class ProductionIngestConfig:
 class ProductionIngestDeployment:
     app: IngestHttpApp
     service: SchemaGatedIngestService
-    config: ProductionIngestConfig
 
 
 def _default_clickhouse_client_factory(**kwargs: Any) -> Any:
@@ -133,17 +132,20 @@ def build_ingest_deployment_from_env(
     *,
     clickhouse_client_factory: ClickHouseClientFactory | None = None,
     genai_client_factory: GenAIClientFactory | None = None,
+    property_profiles: Mapping[str, Sequence[PropertySpec]] | None = None,
 ) -> ProductionIngestDeployment:
     """Compose and open the trusted production ingestion stack from environment config.
 
     No secret is accepted through argv. The returned app cannot report ready until the same
     trusted ClickHouse client used for provenance persistence has passed schema preflight.
-    Factories are injectable so composition can be tested without network credentials.
+    Factories and server-owned profiles are injectable so composition can be tested or
+    customized without giving HTTP callers authority to define extraction policy.
     """
 
     config = ProductionIngestConfig.from_environ(environ)
     clickhouse_factory = clickhouse_client_factory or _default_clickhouse_client_factory
     google_factory = genai_client_factory or create_google_genai_client
+    profiles = {"hero": HERO_PROPERTY_REGISTRY} if property_profiles is None else property_profiles
 
     try:
         clickhouse_client = clickhouse_factory(
@@ -181,20 +183,22 @@ def build_ingest_deployment_from_env(
         app = IngestHttpApp(
             service,
             identity,
-            property_profiles={"hero": HERO_PROPERTY_REGISTRY},
+            property_profiles=profiles,
             extractor_model=config.gemini_model,
             extractor_version=config.extractor_version,
             prompt_schema_version=config.prompt_schema_version,
         )
         # This is deliberately last. Construction alone can never make /readyz return 200.
         service.start()
-        return ProductionIngestDeployment(app=app, service=service, config=config)
+        return ProductionIngestDeployment(app=app, service=service)
     except ProductionIngestConfigurationError:
         raise
-    except Exception as exc:
+    except Exception:
+        # Suppress provider exception context because SDK/driver messages can contain endpoints,
+        # connection strings, or other deployment details that must not enter startup logs.
         raise ProductionIngestStartupError(
             "TakeKeeper production ingestion could not start safely."
-        ) from exc
+        ) from None
 
 
 def create_wsgi_app_from_env(environ: Mapping[str, str] | None = None) -> IngestHttpApp:
