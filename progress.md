@@ -2,78 +2,68 @@
 
 ## Current status
 
-TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, live external-media candidate evaluation, and trusted media provenance utilities.
+TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, live external-media candidate evaluation, and trusted media provenance.
 
-This run wires trusted production-media metadata into the canonical extraction request/prompt and Google transport. Extensionless private/signed `https://` or `gs://` video can now be sent to Gemini when trusted ingest supplies an allow-listed MIME type. Optional content SHA-256 and byte size now travel with the extraction prompt as application-owned provenance metadata, without being copied into model prompt text. Fresh and existing ClickHouse deployments also have schema support for those fields, although the current `ClickHouseExtractionProvenanceStore` still needs to persist them.
+This run completes the persistence half of trusted media provenance. The canonical ClickHouse extraction store now writes, reads, and immutably reconciles trusted media MIME type, SHA-256 byte identity, and byte size in addition to the existing locator fingerprint. A retry may resume an identical partially persisted run, but reusing the same `run_id` with different trusted media bytes, MIME metadata, or byte size now fails closed before any observation reconciliation proceeds.
 
 ## Inspected this run
 
 - Read the previous `progress.md` completely before deciding what to change.
 - Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and the connected account has push/admin permission.
-- Inspected the recursive repository tree plus the current extraction and provenance path, especially:
-  - `src/takekeeper/extraction.py`;
-  - `src/takekeeper/google_genai_transport.py`;
-  - `src/takekeeper/media_provenance.py`;
-  - `src/takekeeper/extraction_store.py`;
-  - `sql/schema.sql`;
-  - `tests/test_google_genai_transport.py`;
-  - `tests/test_extraction_store.py`.
-- Confirmed the highest-priority unblocked gap was trusted MIME/content identity propagation rather than more benchmark-only work.
-- Preserved tenant scope, configured-property/value registries, local response validation, continuity projection policy, read-only MCP boundaries, append-only extraction history, and existing fixture compatibility.
+- Inspected the canonical persistence path in `src/takekeeper/extraction_store.py`.
+- Inspected `TakeExtractionRequest` trusted media fields and validation in `src/takekeeper/extraction.py`.
+- Inspected the ClickHouse client protocol in `src/takekeeper/clickhouse_memory.py`.
+- Inspected `tests/test_extraction_store.py` to preserve existing append-only in-memory semantics and tenant-scoped reads.
+- Rechecked `sql/migrations/002_extraction_media_provenance.sql`; the existing additive migration matches the application columns now being written.
+- Attempted a clean local clone for executable validation. DNS resolution for `github.com` still failed before checkout, so no local Python process could run against repository files.
 
 ## Exact changes made this run
 
-### Canonical extraction request and prompt now carry trusted media metadata
+### Extraction run records now retain trusted byte identity
 
-Updated `src/takekeeper/extraction.py`:
+Updated `src/takekeeper/extraction_store.py`:
 
-- `TakeExtractionRequest` now has optional trusted fields:
-  - `media_mime_type`;
-  - `media_content_sha256`;
-  - `media_byte_size`.
-- Existing callers remain compatible because all three fields default to `None`.
-- MIME metadata is allow-listed against TakeKeeper's supported video MIME set.
-- Content SHA-256 must be lowercase 64-character hexadecimal.
-- Byte size must be a positive integer and cannot be supplied without a content hash.
-- `ExtractionPrompt` now carries the same three fields.
-- `build_extraction_prompt()` propagates the fields as structured application metadata but does not include signed locators, content hashes, or byte size inside prompt text.
+- `ExtractionRunRecord` now includes:
+  - `media_mime_type: str | None`;
+  - `media_content_sha256: str | None`;
+  - `media_byte_size: int | None`.
+- `_records()` copies those fields only from the trusted `TakeExtractionRequest`; Gemini/model output has no path to populate or alter them.
+- `media_fingerprint` remains explicitly documented as locator+duration identity and is not conflated with byte identity.
 
-These values remain trusted ingest/application metadata; Gemini cannot return or override them.
+### ClickHouse inserts and reads now include media provenance
 
-### Google transport now supports extensionless trusted production media
+`ClickHouseExtractionProvenanceStore` now:
 
-Updated `src/takekeeper/google_genai_transport.py`:
+- includes all three trusted fields in `_RUN_COLUMNS`;
+- writes them on new `extraction_runs` inserts;
+- selects and reconstructs them in `_existing_run()`;
+- selects and reconstructs them in tenant/scene/take-scoped `list_runs()`;
+- preserves `None` for historical rows whose migration-added fields are null.
 
-- removed its duplicate MIME/scheme validation implementation;
-- routes URI + optional explicit MIME through the shared `media_provenance.resolve_video_mime_type()` boundary;
-- supports extensionless signed/object URLs only when trusted application metadata supplies an allow-listed MIME type;
-- still rejects plaintext HTTP, malformed GCS locators, embedded URL credentials, unsupported MIME families, and MIME/suffix disagreement;
-- still exposes no tools/function calls and still uses TakeKeeper's locally constructed structured-output schema;
-- content SHA-256 and byte size are not sent as model text or model-controlled metadata; they remain available to persistence/provenance layers.
+The application column order matches the additive migration/fresh schema contract. Existing historical rows remain readable because the columns are nullable.
+
+### Immutable retry reconciliation now protects byte identity
+
+`_run_payload()` now includes MIME type, content SHA-256, and byte size. Therefore the existing retry reconciler now rejects a reused `run_id` if any of these trusted immutable values differ from the persisted row.
+
+This closes an important production ambiguity: two objects could share a locator/duration or a mutable object name while containing different bytes. When a trusted ingest boundary supplies a content digest, the run identity now protects that fact during acknowledgement-loss retries, partial persistence recovery, and duplicate submissions.
+
+The retry error remains intentionally non-sensitive: it states that immutable provenance differs without echoing URIs, hashes, sizes, credentials, or provider payloads.
 
 ### Regression coverage
 
-Added `tests/test_trusted_media_extraction.py` covering:
+Added `tests/test_extraction_media_persistence.py` with an in-process fake ClickHouse client. It covers:
 
-- request → prompt propagation of MIME/content hash/byte size;
-- absence of signed locator/hash leakage into prompt text;
-- extensionless signed HTTPS media accepted by Google transport with trusted `video/mp4` metadata;
-- MIME/suffix conflict rejection;
-- byte-size-without-content-hash rejection;
-- malformed/uppercase content digest rejection;
-- backward compatibility for ordinary suffix-based GCS media with no explicit metadata.
+- trusted MIME/SHA-256/byte size written in the run insert;
+- returned `ExtractionRunRecord` carrying the same fields;
+- an identical same-`run_id` retry reconciling without a second run insert;
+- same `run_id` + changed content SHA-256 failing closed;
+- same `run_id` + changed MIME type failing closed;
+- same `run_id` + changed byte size failing closed;
+- `list_runs()` round-tripping the provenance fields;
+- tenant-scoped run reads returning no data for another production.
 
-### ClickHouse schema migration
-
-Added `sql/migrations/002_extraction_media_provenance.sql` for existing deployments. It adds, idempotently:
-
-- `media_mime_type LowCardinality(Nullable(String))`;
-- `media_content_sha256 Nullable(FixedString(64))`;
-- `media_byte_size Nullable(UInt64)`.
-
-Updated `sql/schema.sql` so fresh deployments create `takekeeper.extraction_runs` with the same columns.
-
-The migration is additive and nullable so historical extraction rows remain valid and older application inserts can still omit the new columns while rolling forward.
+The test deliberately uses an extraction result with zero observations so the cases isolate run-level retry/provenance behavior rather than observation reconciliation.
 
 ### Repository safety
 
@@ -89,13 +79,16 @@ Files were written directly to `UnknownGod2011/ClickHouse` `main` through the au
 
 Implementation commits this run:
 
-- `a8287b822328368b4181f401ebba1779951befb6` — shared trusted MIME validation in Google transport;
-- `7d4d0812ac78f29fa9473112be042a7b9832226e` — trusted media metadata through extraction requests/prompts;
-- `9b10c9fd63084fccda9a361e3170529b310401b5` — trusted-media extraction regression tests;
-- `45ea03d292dc5e6470bfb0631d37d858be122e9c` — additive ClickHouse provenance migration;
-- `bd7ddeea14240c269bd583cd8a05211fb7c76043` — provenance fields in fresh schema.
+- `1a9d8ab516850192fc791fbcdf89c514f872ce41` — persist trusted media byte provenance and include it in immutable retry reconciliation;
+- `b5def2f32cc8baaaa677f0e71fb61ca89f651fd8` — add credential-free retry/round-trip regression coverage.
 
-A normal runnable checkout is still unavailable in this automation environment, so the Python tests and ClickHouse DDL were not executed here. They are structurally reviewed but **not claimed as passing**. No GitHub Actions run was used as a workaround.
+Attempted local validation command path:
+
+```text
+git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git
+```
+
+Result: the environment failed DNS resolution for `github.com` before checkout (`Could not resolve host: github.com`). Therefore the new Python tests and ClickHouse DDL were structurally reviewed but are **not claimed as passing** in this environment. No GitHub Actions run was used as a workaround.
 
 No live Gemini/Vertex request, real ClickHouse request, official MCP session, ffmpeg rendering, or production-media hash was performed.
 
@@ -107,7 +100,7 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 4. Production/scene/take scope is trusted application metadata and never model output.
 5. Only configured entity/property pairs and registry values can enter governed extraction.
 6. Machine confidence is not human confirmation.
-7. Extraction provenance is append-only; reprocessing creates a new run.
+7. Extraction provenance is append-only; reprocessing creates a new run. ClickHouse may reconcile only an identical retry of the same run.
 8. Continuity projection is stricter than extraction persistence; uncertain evidence cannot become current continuity state.
 9. Missing/abstaining projected evidence becomes `insufficient_evidence`, never a mismatch.
 10. Google structured output is a formatting aid, not a trust boundary; responses are locally validated.
@@ -115,8 +108,9 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 12. Explicit MIME type, content SHA-256, byte size, production scope, model identity, and media identity are trusted application metadata and cannot be supplied by Gemini.
 13. MIME/suffix disagreement fails closed.
 14. Signed/private media URI values and content hashes must not be copied into prompts, logs, benchmark reports, or operator-visible error strings unless explicitly required by a trusted administrative surface.
-15. Benchmark thresholds remain immutable after observing a candidate.
-16. Live-service quality/security claims require real authorized execution and are not inferred from mocks.
+15. A persisted same-`run_id` retry must match locator fingerprint, trusted MIME metadata, content SHA-256, byte size, duration, scope, extractor identity, and prompt schema before reconciliation can continue.
+16. Benchmark thresholds remain immutable after observing a candidate.
+17. Live-service quality/security claims require real authorized execution and are not inferred from mocks.
 
 ## Gates
 
@@ -125,32 +119,31 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 - **Gate C — evidence/review:** durable evidence, stable finding identity, append-only review, authenticated API, and operator console are implemented.
 - **Gate D — editorial retrieval:** typed/bounded retrieval and SQL coverage exist; live official MCP execution remains pending.
 - **Gate E — failure honesty:** extraction/persistence/MCP/review paths fail closed structurally; abstentions cannot become false mismatches.
-- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, and replacement isolation are implemented structurally; live RBAC/write-denial proof remains pending.
-- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, content-identity fields, and ClickHouse schema support exist; full persistence wiring and live execution remain pending.
+- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, replacement isolation, and immutable run retry identity are implemented structurally; live RBAC/write-denial proof remains pending.
+- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, byte identity, schema support, and canonical ClickHouse persistence wiring exist; live execution remains pending.
 
 ## Blockers / unknowns
 
-1. A runnable local repository checkout is unavailable in this execution environment, so Python tests and ClickHouse DDL validation remain unexecuted here.
+1. A runnable local repository checkout is unavailable in this execution environment because DNS resolution for `github.com` fails, so Python tests and ClickHouse DDL validation remain unexecuted here.
 2. No reachable authorized disposable ClickHouse endpoint is available.
 3. No Gemini/Vertex credentials or trusted uploaded benchmark media are available.
 4. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
 5. Live `google-genai` video/schema behavior, latency, token usage, and provider failure modes remain unmeasured.
-6. `ClickHouseExtractionProvenanceStore` still omits `media_mime_type`, `media_content_sha256`, and `media_byte_size` from `ExtractionRunRecord`, insert columns, retry comparison payloads, and reads; therefore the new schema can store these fields but the canonical persistence adapter does not yet write them.
-7. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before an updated persistence adapter starts writing the new fields.
-8. Local SHA-256 hashing cannot prove immutability if another writer replaces same-length bytes during the read; production ingest should hash immutable/staged objects or use object generation/version guarantees.
+6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before this updated persistence adapter writes the new fields.
+7. Local SHA-256 hashing cannot prove immutability if another writer replaces same-length bytes during the read; production ingest should hash immutable/staged objects or use object generation/version guarantees.
+8. A real ClickHouse validation is still needed to confirm the exact Python driver round-trip representation for nullable `FixedString(64)` under the selected ClickHouse/clickhouse-connect versions, although the adapter follows the existing string conversion pattern.
 
 ## Highest-priority backlog
 
-- Wire `media_mime_type`, `media_content_sha256`, and `media_byte_size` through `ExtractionRunRecord` and `ClickHouseExtractionProvenanceStore`, including retry/reconciliation equality and tenant-scoped reads.
-- Add persistence tests proving a retry cannot reuse a `run_id` with different content hash/MIME/byte size.
-- Run the complete credential-free suite plus actual ffmpeg fixture generation in a normal checkout.
-- Run `takekeeper-live-benchmark` against one authorized Gemini/Vertex candidate using generated self-owned media.
-- Execute extraction retry/projection replacement against disposable real ClickHouse.
+- Run `tests/test_extraction_media_persistence.py`, `tests/test_extraction_store.py`, and the full credential-free suite in a normal checkout; fix any integration/type issues discovered.
+- Add a safe migration preflight/readiness check so deployments fail with an actionable non-secret error if application code is newer than the ClickHouse schema, instead of discovering missing provenance columns during the first production extraction.
+- Run the migration plus extraction retry/projection replacement against a disposable real ClickHouse instance.
+- Run the deterministic ffmpeg fixture generator and `takekeeper-live-benchmark` against one authorized Gemini/Vertex candidate using self-owned generated media.
 - Start official `ClickHouse/mcp-clickhouse` read-only, exercise continuity/editorial operations, and record explicit write denial.
 
 ## Single best next step
 
-**Complete the persistence half of this provenance contract: extend `ExtractionRunRecord` and `ClickHouseExtractionProvenanceStore` so trusted MIME/content SHA-256/byte size are written, read, and included in immutable retry comparisons. Add regression coverage proving identical retries reconcile but a reused `run_id` with changed media byte identity fails closed.**
+**Add a bounded ClickHouse schema/readiness preflight for the trusted application connection that verifies the required extraction provenance columns (including MIME/SHA-256/byte size) before ingestion starts, with fake-client regression tests and a non-secret actionable migration error. This prevents application/schema rollout skew from turning the first real production extraction into the migration detector.**
 
 ## Relevant implementation references
 
