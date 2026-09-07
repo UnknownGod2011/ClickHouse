@@ -40,6 +40,13 @@ from .google_genai_transport import (
     GoogleGenAITransportError,
     create_google_genai_client,
 )
+from .ingest_runtime import (
+    IngestBootstrapError,
+    IngestedTake,
+    IngestNotReady,
+    IngestReadiness,
+    SchemaGatedIngestService,
+)
 from .mcp_reader import (
     ContinuityEvidenceRow,
     EditorialHit,
@@ -92,6 +99,10 @@ __all__ = [
     "InMemoryExtractionProvenanceStore",
     "InMemoryProductionMemory",
     "InMemoryReviewDecisionStore",
+    "IngestBootstrapError",
+    "IngestedTake",
+    "IngestNotReady",
+    "IngestReadiness",
     "McpEvidenceReader",
     "McpQueryTrace",
     "McpReadError",
@@ -104,6 +115,7 @@ __all__ = [
     "ReviewDecisionStore",
     "ReviewHttpApp",
     "ReviewerIdentityProvider",
+    "SchemaGatedIngestService",
     "StaticBearerIdentityProvider",
     "TakeAnalysisService",
     "TakeExtractionRequest",
