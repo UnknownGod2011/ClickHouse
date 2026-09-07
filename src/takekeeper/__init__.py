@@ -46,6 +46,7 @@ from .google_identity import (
     GoogleOidcIdentityProvider,
     IapIdentityProvider,
 )
+from .ingest_admission import ActorIngestAdmissionGuard, IngestAdmissionSnapshot, IngestOverloaded
 from .ingest_api import IngestHttpApp
 from .ingest_runtime import (
     IngestBootstrapError,
@@ -84,6 +85,7 @@ from .review_console import ReviewConsoleApp
 from .service import TakeAnalysisService
 
 __all__ = [
+    "ActorIngestAdmissionGuard",
     "Baseline",
     "ClickHouseExtractionProvenanceStore",
     "ClickHouseProductionMemory",
@@ -118,10 +120,12 @@ __all__ = [
     "InMemoryExtractionProvenanceStore",
     "InMemoryProductionMemory",
     "InMemoryReviewDecisionStore",
+    "IngestAdmissionSnapshot",
     "IngestBootstrapError",
     "IngestHttpApp",
     "IngestedTake",
     "IngestNotReady",
+    "IngestOverloaded",
     "IngestReadiness",
     "McpEvidenceReader",
     "McpQueryTrace",
