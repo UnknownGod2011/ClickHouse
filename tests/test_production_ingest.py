@@ -77,6 +77,40 @@ class ProductionIngestCompositionTests(unittest.TestCase):
         self.assertTrue(genai_kwargs["vertex_ai"])
         self.assertIsNone(genai_kwargs["api_key"])
         self.assertEqual(genai_kwargs["project"], "takekeeper-prod")
+        self.assertEqual(deployment.app._credential_environ_key, "HTTP_AUTHORIZATION")
+
+    def test_iap_mode_uses_only_signed_iap_assertion_header(self):
+        env = self.vertex_env()
+        env["TAKEKEEPER_INGEST_IDENTITY_MODE"] = "iap"
+        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "/projects/123/global/backendServices/456"
+        env.pop("TAKEKEEPER_INGEST_BEARER_TOKEN")
+        env.pop("TAKEKEEPER_INGEST_ACTOR_ID")
+
+        deployment = build_ingest_deployment_from_env(
+            env,
+            clickhouse_client_factory=lambda **_: _SchemaClient(),
+            genai_client_factory=lambda **_: SimpleNamespace(models=object()),
+        )
+
+        self.assertEqual(
+            deployment.app._credential_environ_key,
+            "HTTP_X_GOOG_IAP_JWT_ASSERTION",
+        )
+
+    def test_google_oidc_mode_keeps_authorization_header(self):
+        env = self.vertex_env()
+        env["TAKEKEEPER_INGEST_IDENTITY_MODE"] = "google_oidc"
+        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "https://takekeeper.example.run.app"
+        env.pop("TAKEKEEPER_INGEST_BEARER_TOKEN")
+        env.pop("TAKEKEEPER_INGEST_ACTOR_ID")
+
+        deployment = build_ingest_deployment_from_env(
+            env,
+            clickhouse_client_factory=lambda **_: _SchemaClient(),
+            genai_client_factory=lambda **_: SimpleNamespace(models=object()),
+        )
+
+        self.assertEqual(deployment.app._credential_environ_key, "HTTP_AUTHORIZATION")
 
     def test_schema_drift_fails_startup_closed(self):
         env = self.vertex_env()
@@ -156,6 +190,26 @@ class ProductionIngestCompositionTests(unittest.TestCase):
 
         self.assertNotIn("too-short-secret", str(caught.exception))
         self.assertIn("TAKEKEEPER_INGEST_BEARER_TOKEN", str(caught.exception))
+
+    def test_google_identity_requires_audience_and_rejects_static_secret(self):
+        env = self.vertex_env()
+        env["TAKEKEEPER_INGEST_IDENTITY_MODE"] = "google_oidc"
+        env.pop("TAKEKEEPER_INGEST_ACTOR_ID")
+        with self.assertRaises(ProductionIngestConfigurationError) as missing:
+            ProductionIngestConfig.from_environ(env)
+        self.assertIn("TAKEKEEPER_INGEST_EXPECTED_AUDIENCE", str(missing.exception))
+
+        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "https://takekeeper.example.run.app"
+        with self.assertRaises(ProductionIngestConfigurationError) as mixed:
+            ProductionIngestConfig.from_environ(env)
+        self.assertIn("TAKEKEEPER_INGEST_BEARER_TOKEN", str(mixed.exception))
+
+    def test_static_identity_rejects_google_audience_configuration(self):
+        env = self.vertex_env()
+        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "https://takekeeper.example.run.app"
+        with self.assertRaises(ProductionIngestConfigurationError) as caught:
+            ProductionIngestConfig.from_environ(env)
+        self.assertIn("TAKEKEEPER_INGEST_EXPECTED_AUDIENCE", str(caught.exception))
 
 
 if __name__ == "__main__":
