@@ -9,6 +9,7 @@ IAP_ISSUER = "https://cloud.google.com/iap"
 GOOGLE_OIDC_ISSUERS = frozenset({"accounts.google.com", "https://accounts.google.com"})
 MAX_ACTOR_COMPONENT_LENGTH = 512
 MAX_TOKEN_LENGTH = 16_384
+MAX_AUTHORIZED_SUBJECTS = 256
 
 
 class TokenVerifier(Protocol):
@@ -51,11 +52,12 @@ def _default_iap_verifier(token: str, audience: str) -> Mapping[str, object]:
 
 
 class GoogleOidcIdentityProvider:
-    """Verify Google-issued OIDC bearer tokens and return a stable subject actor ID.
+    """Verify Google OIDC and optionally require a deployment-owned subject mapping.
 
-    This adapter is suitable for Cloud Run service-to-service identity tokens and other
-    Google-issued ID tokens whose audience is explicitly pinned by the deployment. It does
-    not trust email headers or caller-supplied actor IDs.
+    ``authorized_subjects`` maps verified Google ``sub`` values to bounded TakeKeeper actor
+    IDs. Production composition always supplies this mapping. Keeping it optional here lets
+    embedders use the verifier as a pure authentication primitive, but callers that need an
+    authorization boundary should always configure it explicitly.
     """
 
     def __init__(
@@ -66,12 +68,14 @@ class GoogleOidcIdentityProvider:
         clock: Callable[[], float] = time.time,
         clock_skew_seconds: int = 60,
         actor_prefix: str = "google",
+        authorized_subjects: Mapping[str, str] | None = None,
     ) -> None:
         self._audience = _bounded_config(expected_audience, "expected audience", 2_048)
         self._verifier = verifier or _default_oidc_verifier
         self._clock = clock
         self._clock_skew_seconds = _validate_skew(clock_skew_seconds)
         self._actor_prefix = _bounded_config(actor_prefix, "actor prefix", 64)
+        self._authorized_subjects = _validate_subject_mapping(authorized_subjects)
 
     def authenticate(self, authorization: str | None) -> str:
         token = _bearer_token(authorization)
@@ -83,16 +87,15 @@ class GoogleOidcIdentityProvider:
             now=self._clock(),
             clock_skew_seconds=self._clock_skew_seconds,
         )
-        return f"{self._actor_prefix}:{claims.subject}"
+        return _authorized_actor(
+            claims.subject,
+            self._authorized_subjects,
+            default=f"{self._actor_prefix}:{claims.subject}",
+        )
 
 
 class IapIdentityProvider:
-    """Verify an IAP signed-header JWT and return its stable subject as actor ID.
-
-    `authenticate()` expects the raw value of `X-Goog-IAP-JWT-Assertion`. The HTTP boundary
-    must therefore be configured to source credentials from that header rather than from
-    `Authorization`. IAP compatibility email/user headers are intentionally ignored.
-    """
+    """Verify an IAP signed-header JWT and optionally enforce subject authorization."""
 
     def __init__(
         self,
@@ -102,12 +105,14 @@ class IapIdentityProvider:
         clock: Callable[[], float] = time.time,
         clock_skew_seconds: int = 60,
         actor_prefix: str = "iap",
+        authorized_subjects: Mapping[str, str] | None = None,
     ) -> None:
         self._audience = _bounded_config(expected_audience, "expected audience", 2_048)
         self._verifier = verifier or _default_iap_verifier
         self._clock = clock
         self._clock_skew_seconds = _validate_skew(clock_skew_seconds)
         self._actor_prefix = _bounded_config(actor_prefix, "actor prefix", 64)
+        self._authorized_subjects = _validate_subject_mapping(authorized_subjects)
 
     def authenticate(self, assertion: str | None) -> str:
         if not isinstance(assertion, str) or not assertion or len(assertion) > MAX_TOKEN_LENGTH:
@@ -120,7 +125,11 @@ class IapIdentityProvider:
             now=self._clock(),
             clock_skew_seconds=self._clock_skew_seconds,
         )
-        return f"{self._actor_prefix}:{claims.subject}"
+        return _authorized_actor(
+            claims.subject,
+            self._authorized_subjects,
+            default=f"{self._actor_prefix}:{claims.subject}",
+        )
 
 
 def _verify_bounded(
@@ -152,7 +161,6 @@ def _verify_bounded(
     except PermissionError:
         raise
     except Exception:
-        # Never copy verifier/provider errors or JWT contents across the trust boundary.
         raise PermissionError("invalid credentials") from None
     return GoogleIdentityClaims(
         subject=subject,
@@ -160,6 +168,39 @@ def _verify_bounded(
         audience=audience,
         expires_at=expires_at,
     )
+
+
+def _authorized_actor(
+    subject: str,
+    authorized_subjects: Mapping[str, str] | None,
+    *,
+    default: str,
+) -> str:
+    if authorized_subjects is None:
+        return default
+    actor = authorized_subjects.get(subject)
+    if actor is None:
+        # Deliberately identical to malformed/invalid credentials: never disclose whether a
+        # signed subject exists in the deployment's authorization policy.
+        raise PermissionError("invalid credentials")
+    return actor
+
+
+def _validate_subject_mapping(
+    value: Mapping[str, str] | None,
+) -> Mapping[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or not value or len(value) > MAX_AUTHORIZED_SUBJECTS:
+        raise GoogleIdentityConfigurationError("invalid authorized subject mapping")
+    normalized: dict[str, str] = {}
+    for subject, actor in value.items():
+        checked_subject = _bounded_config(subject, "authorized subject", MAX_ACTOR_COMPONENT_LENGTH)
+        checked_actor = _bounded_config(actor, "authorized actor", MAX_ACTOR_COMPONENT_LENGTH)
+        if checked_subject in normalized:
+            raise GoogleIdentityConfigurationError("invalid authorized subject mapping")
+        normalized[checked_subject] = checked_actor
+    return normalized
 
 
 def _bearer_token(authorization: str | None) -> str:
