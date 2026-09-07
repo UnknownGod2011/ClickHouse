@@ -2,75 +2,72 @@
 
 ## Current status
 
-TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, live external-media candidate evaluation, trusted media provenance, immutable trusted media byte identity, and a bounded extraction-schema readiness gate.
+TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, live external-media candidate evaluation, trusted media provenance, immutable trusted media byte identity, and bounded extraction-schema readiness.
 
-This run adds a production deployment preflight for the trusted ClickHouse application connection. TakeKeeper can now verify the exact `extraction_runs` and `extracted_observations` column/type contract before enabling ingestion, including the MIME/SHA-256/byte-size fields introduced by migration 002. Schema drift fails closed with a coarse actionable migration message instead of surfacing during the first production extraction.
+This run turns schema readiness from an optional helper into the canonical production ingestion invariant. `SchemaGatedIngestService` starts closed, performs the trusted ClickHouse extraction-schema preflight before opening, invokes extraction/persistence only while ready, and revokes readiness before every recheck so a failed post-deploy validation cannot leave a previously-ready process accepting takes.
 
 ## Inspected this run
 
 - Read the previous `progress.md` completely before deciding what to change.
 - Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and the connected account has push/admin permission.
-- Inspected `src/takekeeper/extraction_store.py` and confirmed the trusted media provenance fields are now part of `_RUN_COLUMNS`, reads, writes, and immutable retry reconciliation.
-- Inspected the trusted ClickHouse client protocol in `src/takekeeper/clickhouse_memory.py`.
-- Inspected `sql/schema.sql` and `sql/migrations/002_extraction_media_provenance.sql` to derive the exact application schema contract.
-- Inspected `pyproject.toml`; no new dependency is required for the preflight.
-- Searched for an existing schema/readiness implementation and found none.
-- Attempted executable validation from a clean clone; the runtime still cannot resolve `github.com`, so Python could not start against the repository checkout.
+- Inspected `src/takekeeper/schema_preflight.py` and confirmed it already performs two bounded, parameterized metadata reads for `extraction_runs` and `extracted_observations`.
+- Inspected `src/takekeeper/extraction.py` for the trusted `TakeExtractionRequest`, extractor contract, and model/scope validation boundary.
+- Inspected `src/takekeeper/extraction_store.py` for the append-only extraction provenance protocol and ClickHouse writer.
+- Inspected `src/takekeeper/__init__.py`, `tests/test_schema_preflight.py`, `SCHEMA_READINESS.md`, and `README.md` to keep the new runtime boundary aligned with existing public APIs and documentation.
+- Confirmed there was no existing canonical ingest bootstrap/readiness service enforcing the schema preflight.
 
 ## Exact changes made this run
 
-### Bounded extraction schema preflight
+### Canonical schema-gated ingestion runtime
 
-Added `src/takekeeper/schema_preflight.py`.
+Added `src/takekeeper/ingest_runtime.py` with:
 
-It provides:
+- `SchemaGatedIngestService` as the production extraction entry boundary;
+- `IngestReadiness`, exposing only coarse `ready/not_ready` state plus whether schema checking completed;
+- `IngestNotReady` for attempts to ingest before readiness;
+- `IngestBootstrapError` for bounded provider/preflight failures without copying provider exception text;
+- `IngestedTake`, carrying the governed extraction result plus persisted provenance record.
 
-- `check_extraction_schema(client, database=...)` for a read-only report;
-- `require_extraction_schema_ready(client, database=...)` for a fail-closed deployment/worker startup gate;
-- `SchemaPreflightReport` with deterministic `ready`, checked tables, missing columns, and incompatible columns;
-- `ClickHouseSchemaNotReady` with an intentionally coarse remediation message.
+The service starts with ingestion closed. `start()` calls `require_extraction_schema_ready(...)` using the trusted application ClickHouse client and only flips readiness to `ready` after the current schema contract passes. `ingest(...)` refuses to invoke the extractor or persistence store while closed.
 
-The check performs exactly two parameterized reads against `system.columns`, one for `extraction_runs` and one for `extracted_observations`. Each read is bounded with `max_result_rows=64` and `result_overflow_mode=throw`.
+### Revalidation fails closed
 
-No production rows, media locators, media hashes, Gemini output, tenant identifiers, or credentials are read. Database names and table names are sent as query parameters rather than interpolated into SQL.
+`start()` deliberately clears readiness before every preflight. This means a process that was previously healthy cannot remain open if a deployment/restart/revalidation later sees an old, partially migrated, or incompatible schema.
 
-### Migration 002 rollout skew is detected before ingestion
+`close()` explicitly revokes readiness without querying ClickHouse, touching media, or mutating extraction history.
 
-The `extraction_runs` readiness contract explicitly verifies:
+### Coarse readiness/privacy contract
 
-- `media_mime_type` as nullable low-cardinality string metadata;
-- `media_content_sha256` as nullable `FixedString(64)`;
-- `media_byte_size` as nullable `UInt64`;
-- the existing locator fingerprint, trusted scope, duration, extractor identity, prompt-schema identity, and timestamp columns.
+The runtime readiness surface contains no:
 
-The companion `extracted_observations` table is checked in the same gate so a deployment cannot pass run-table readiness but fail on the first observation insert.
+- ClickHouse host or connection string;
+- database/schema diff details;
+- provider exception text;
+- production/scene/take identifiers;
+- media URI, MIME, hash, or byte size;
+- Gemini output;
+- credential or secret material.
 
-Missing/incompatible columns do not echo observed database types, connection strings, database names, media data, hashes, or credentials in the raised readiness exception. The operator receives only a bounded instruction to apply `sql/schema.sql` for a fresh deployment or pending `sql/migrations/*.sql` for an upgrade and rerun the preflight.
+`ClickHouseSchemaNotReady` remains the actionable migration failure from the schema gate. Unexpected metadata/provider failures are wrapped in a fixed `IngestBootstrapError` message while retaining the original exception only as the internal cause.
 
 ### Regression coverage
 
-Added `tests/test_schema_preflight.py` covering:
+Added `tests/test_ingest_runtime.py` covering:
 
-- a current schema passing;
-- exactly two bounded `system.columns` reads;
-- migration-002 provenance columns missing from an older deployment;
-- an incompatible content-hash column type;
-- a missing `extracted_observations` table surfacing as required columns missing;
-- invalid database identifiers rejected before any query;
-- database/table values remaining parameterized rather than interpolated;
-- no command or insert operation being used by the preflight.
+- ingestion denied before startup/preflight;
+- a current schema opening ingestion after exactly the underlying bounded metadata checks;
+- successful routing through extractor then provenance store;
+- migration-002-old schema never opening ingestion;
+- failed recheck revoking previously granted readiness;
+- provider/preflight exception detail not escaping the bounded bootstrap error;
+- explicit `close()` revoking readiness without extra ClickHouse queries or persistence mutations.
 
-### Operator/deployment documentation
+The tests use fake ClickHouse metadata, extractor, and store objects and require no credentials, cloud services, media, or writable database.
 
-Added `SCHEMA_READINESS.md` with the recommended startup sequence:
+### Public API and documentation
 
-1. create the separately permissioned trusted application ClickHouse client;
-2. run `require_extraction_schema_ready(...)` before accepting ingestion or starting extraction workers;
-3. fail the deployment/readiness transition if the check fails;
-4. apply migrations out of band using appropriately privileged credentials;
-5. restart/recheck with the normal lower-privilege application connection.
-
-The document reiterates that Gemini, the browser UI, and the official ClickHouse MCP server must not receive migration privileges.
+- Exported `SchemaGatedIngestService`, `IngestReadiness`, `IngestNotReady`, `IngestBootstrapError`, and `IngestedTake` from `takekeeper`.
+- Updated `SCHEMA_READINESS.md` to make `SchemaGatedIngestService` the recommended production composition boundary and document startup, revalidation, readiness, migration, and privilege separation semantics.
 
 ### Repository safety
 
@@ -79,26 +76,30 @@ The document reiterates that Gemini, the browser UI, and the official ClickHouse
 - No Gemini/Vertex, ClickHouse, object-storage, or private-media credential was used.
 - No production media was accessed or modified.
 - No destructive ClickHouse operation was introduced.
-- The readiness path is metadata-read-only and does not perform migrations automatically.
+- Schema checks remain metadata-read-only and migrations remain an out-of-band privileged operation.
 
 ## Validation / results
 
 Files were written directly to `UnknownGod2011/ClickHouse` `main` through the authenticated GitHub connector.
 
-Implementation commits this run:
+Implementation commits this run before this handoff update:
 
-- `40a7b6e5a0f8d8438a9426d54119eb694e2f5620` — add bounded ClickHouse extraction schema preflight;
-- `cfaeea67af45614b57fb59cab97e1ccd4ec5fb0e` — add credential-free schema-preflight regression coverage;
-- `03add05055ef0ecdf367d09742fc1e00371d10d6` — document the production schema readiness gate.
+- `67b27625bd37bb988bda350c0e2bcf42b0781bd4` — enforce schema readiness at ingestion boundary;
+- `e68b1abfb896d9823e6cdbf6fdb71926a870c6c2` — test schema-gated production ingestion;
+- `40cc2251ee35d15b28b6a459407a9302dab6605b` — export production ingest runtime;
+- `b313c7bb6212d7737c45b51d6f8252183e46e7cf` — tighten ingest runtime imports;
+- `d5cf8223ebce1b6cf3ca9132106ba289f58509fc` — document enforced ingestion readiness boundary.
 
-Attempted validation:
+Structural review performed:
 
-```text
-git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git /tmp/takekeeper-check
-PYTHONPATH=src python -m unittest tests.test_schema_preflight -v
-```
+- verified the new service imports existing protocols/types rather than adding a dependency;
+- verified ingestion checks `_ready` before extractor invocation;
+- verified `start()` clears readiness before executing the preflight;
+- verified old-schema failure leaves extractor/store call counts at zero in regression coverage;
+- verified the public readiness object is intentionally coarse;
+- verified no CI workflow or external service execution was introduced.
 
-Result: clone failed before checkout because DNS resolution for `github.com` failed (`Could not resolve host: github.com`). Therefore the new Python test suite is structurally reviewed but is **not claimed as passing** in this environment. No GitHub Actions run was used as a workaround.
+Executable validation is still unavailable in this automation environment because there is no runnable repository checkout exposed to the execution container. I therefore do **not** claim `tests/test_ingest_runtime.py`, `tests/test_schema_preflight.py`, or the full Python suite passes here. No GitHub Actions run was used as a workaround.
 
 No live Gemini/Vertex request, real ClickHouse request, official MCP session, ffmpeg rendering, or production-media operation was performed.
 
@@ -123,40 +124,42 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 17. Live-service quality/security claims require real authorized execution and are not inferred from mocks.
 18. Application/schema compatibility must be checked before enabling extraction ingestion; the first production take must never serve as the migration detector.
 19. Schema readiness is metadata-read-only and must not implicitly grant migration privileges to the normal application connection.
+20. Production extraction ingress starts closed and must route through `SchemaGatedIngestService`; successful schema preflight is required before Gemini/extraction or provenance persistence can run.
+21. Revalidation revokes readiness before checking, so a failed schema recheck always leaves ingestion closed.
 
 ## Gates
 
-- **Gate A — live ClickHouse:** implementation/harness coverage exists; schema readiness is now implemented structurally; real-endpoint execution remains pending.
+- **Gate A — live ClickHouse:** implementation/harness coverage exists; schema readiness is implemented and now enforced by the canonical ingestion boundary; real-endpoint execution remains pending.
 - **Gate B — continuity correctness:** deterministic comparison, persistence, governed projection, and stale-state convergence are implemented.
 - **Gate C — evidence/review:** durable evidence, stable finding identity, append-only review, authenticated API, and operator console are implemented.
 - **Gate D — editorial retrieval:** typed/bounded retrieval and SQL coverage exist; live official MCP execution remains pending.
-- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness paths fail closed structurally; abstentions cannot become false mismatches.
-- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, replacement isolation, immutable run retry identity, and metadata-only preflight are implemented structurally; live RBAC/write-denial proof remains pending.
-- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, byte identity, schema support, canonical ClickHouse persistence, and rollout-skew detection exist; live execution remains pending.
+- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness/ingest-bootstrap paths fail closed structurally; abstentions cannot become false mismatches.
+- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, replacement isolation, immutable run retry identity, metadata-only preflight, and closed-by-default ingestion are implemented structurally; live RBAC/write-denial proof remains pending.
+- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, byte identity, schema support, canonical ClickHouse persistence, rollout-skew detection, and schema-gated ingestion exist; live execution remains pending.
 
 ## Blockers / unknowns
 
-1. A runnable local repository checkout is unavailable in this execution environment because DNS resolution for `github.com` fails, so Python tests and ClickHouse DDL validation remain unexecuted here.
+1. A runnable local repository checkout is unavailable in this execution environment, so Python tests and ClickHouse DDL validation remain unexecuted here.
 2. No reachable authorized disposable ClickHouse endpoint is available.
 3. No Gemini/Vertex credentials or trusted uploaded benchmark media are available.
 4. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
 5. Live `google-genai` video/schema behavior, latency, token usage, and provider failure modes remain unmeasured.
-6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before the updated persistence adapter writes the new fields; the new preflight now detects this rollout skew before ingestion.
+6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before the updated persistence adapter writes the new fields; startup now detects this rollout skew and refuses ingestion.
 7. Local SHA-256 hashing cannot prove immutability if another writer replaces same-length bytes during the read; production ingest should hash immutable/staged objects or use object generation/version guarantees.
 8. A real ClickHouse validation is still needed to confirm exact driver type strings and nullable `FixedString(64)` round trips under the selected ClickHouse/clickhouse-connect versions.
-9. The new readiness helper is available for deployment/startup wiring, but there is not yet one canonical production service bootstrap that invokes it automatically before opening the ingest surface.
+9. The canonical domain ingestion boundary now exists, but there is not yet a production HTTP/worker entrypoint that exposes its coarse readiness state and accepts trusted requests only after `start()` succeeds.
 
 ## Highest-priority backlog
 
-- Wire `require_extraction_schema_ready(...)` into the canonical production ingest/bootstrap boundary once that service entry point is identified/standardized, and expose only a coarse ready/not-ready operator status.
-- Run `tests/test_schema_preflight.py`, `tests/test_extraction_media_persistence.py`, `tests/test_extraction_store.py`, and the full credential-free suite in a normal checkout; fix any integration/type issues discovered.
+- Add a minimal authenticated production ingest API/worker composition around `SchemaGatedIngestService`, with `/healthz` independent of ClickHouse and `/readyz` returning only coarse readiness; prove POST ingestion cannot reach extraction while unready.
+- Run `tests/test_ingest_runtime.py`, `tests/test_schema_preflight.py`, `tests/test_extraction_media_persistence.py`, `tests/test_extraction_store.py`, and the full credential-free suite in a normal checkout; fix any integration/type issues discovered.
 - Run schema preflight, migration 002, extraction retry, and projection replacement against a disposable real ClickHouse instance.
 - Run the deterministic ffmpeg fixture generator and `takekeeper-live-benchmark` against one authorized Gemini/Vertex candidate using self-owned generated media.
 - Start official `ClickHouse/mcp-clickhouse` read-only, exercise continuity/editorial operations, and record explicit write denial.
 
 ## Single best next step
 
-**Create/standardize the production ingestion bootstrap so the trusted ClickHouse client must pass `require_extraction_schema_ready(...)` before the ingest worker/API becomes ready, with a coarse readiness surface and fake-client tests proving an old schema cannot accept a take. This turns the new preflight from a callable guard into an enforced deployment invariant.**
+**Add a small authenticated production ingest HTTP/worker entrypoint around `SchemaGatedIngestService` with separate liveness/readiness semantics, strict bounded JSON request validation, and regression tests proving an old/unreachable ClickHouse schema returns unready and cannot invoke Gemini or persistence. This makes the enforced domain boundary usable by a real deployment without broadening credentials or agent capabilities.**
 
 ## Relevant implementation references
 
