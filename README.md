@@ -2,49 +2,46 @@
 
 **Production memory and continuity intelligence for film, television, and creator teams.**
 
-TakeKeeper turns each recorded take into structured, evidence-backed production memory. Gemini-compatible multimodal extractors can produce observations; ClickHouse stores durable history; and the official `ClickHouse/mcp-clickhouse` server is the read-side bridge for agentic production and editorial queries.
+TakeKeeper turns recorded takes into structured, evidence-backed production memory. A governed Gemini/Google Gen AI extraction adapter can analyze trusted media, ClickHouse stores durable observations and review history, deterministic continuity logic detects mismatches, and the official `ClickHouse/mcp-clickhouse` server is the bounded read-side bridge for production/editorial agents.
 
-This repository is a **personal open-source project** and the implementation is actively being built here.
+This repository is a personal open-source project.
 
 ## What works today
 
-- Deterministic continuity comparison with explicit `mismatch`, `needs_confirmation`, `insufficient_evidence`, and `missing_baseline`.
-- `ProductionMemory` port with both in-memory and real ClickHouse-backed implementations.
-- `TakeAnalysisService` with production/scene/take scope enforcement and stale-finding replacement on re-analysis.
-- ClickHouse DDL and deterministic `Glass House` Scene 28 seed data.
-- Parameter-bound ClickHouse reads/deletes and bulk inserts through the official `clickhouse-connect` client surface.
-- Hard-constraint editorial/continuity SQL builders with validated configurable database identifiers.
-- A bounded `McpEvidenceReader` for the official MCP `run_query` tool. It only emits TakeKeeper-owned scoped SQL, validates production/scene/take scope on returned rows, records query latency/row-count provenance, and fails closed on malformed/tool-error/wrong-tenant responses.
-- Stable deterministic continuity finding IDs so a logical finding keeps the same identity across re-analysis even when evidence/value changes.
-- Append-only human review history through `FindingReviewService`, with both in-memory and ClickHouse-backed decision stores. Reviews are only accepted for findings that currently exist in the requested production/scene/take scope.
-- A narrow authenticated WSGI review API exposing only current finding/evidence/history reads and append-only bounded review decisions. Reviewer identity is derived from bearer authentication; callers cannot supply actor IDs, finding IDs, SQL, tables, or generic mutations.
-- A same-origin, dependency-free operator review console at `GET /review` when `ReviewConsoleApp` wraps the review API. It renders evidence, confidence, baseline/observed values, evidence window, stable finding ID, immutable decision history, and the three bounded human dispositions without adding a new write primitive.
-- Environment-gated real ClickHouse integration tests that create an isolated ephemeral database, reset to the exact Scene 28 fixture before every acceptance case, verify continuity/editorial behavior, prove stable persisted finding IDs, prove append-only human review history, verify stale-finding deletion, and then drop the database.
-- Tests for Scene 28 behavior, tenant isolation, idempotency, failure honesty, ClickHouse adapter safety, MCP response parsing, stable finding identity, human-review scoping, review API security, and review-console security/delegation.
+- Deterministic continuity comparison with explicit `mismatch`, `needs_confirmation`, `insufficient_evidence`, and `missing_baseline` outcomes.
+- In-memory and ClickHouse-backed production-memory adapters with trusted tenant/scene/take scoping.
+- Replacement-based current machine state: later abstaining re-analysis clears stale projected observations for the exact take while append-only extraction provenance is retained.
+- Governed multimodal extraction with configured entity/property registries, bounded evidence windows, confidence/disposition policy, local response validation, and fail-closed extraction-to-continuity projection.
+- Optional Google Gen AI / Vertex AI video transport behind the same extraction boundary; missing provider credentials do not break the deterministic core.
+- Retry-safe extraction persistence and disposable real-ClickHouse acceptance harnesses for persistence/reconciliation and scoped replacement semantics.
+- Hard-constrained ClickHouse analytical query builders plus a bounded `McpEvidenceReader` for the official MCP `run_query` tool. Arbitrary model-authored SQL is not exposed.
+- Stable deterministic finding IDs, append-only human review history, authenticated review API, and a dependency-free same-origin operator console.
+- A credential-free multimodal benchmark that measures normalized-value accuracy, temporal evidence IoU, extraction disposition, projection eligibility, final continuity status, and unsupported assertions independently.
+- A deterministic benchmark CLI/release gate that emits stable JSON and exits non-zero on quality regression.
 
-A live Gemini/ADK → official ClickHouse MCP → real ClickHouse round-trip is still unproven and must be measured rather than fabricated.
+Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered proven after execution against authorized real services; fixture tests are not presented as live-service validation.
 
 ## Repository map
 
+- `src/takekeeper/extraction.py` — governed extraction contract and local validation.
+- `src/takekeeper/google_genai_transport.py` — optional Google Gen AI / Vertex AI multimodal transport.
+- `src/takekeeper/extraction_projection.py` — strict evidence-to-current-continuity projection boundary.
+- `src/takekeeper/multimodal_benchmark.py` — independent benchmark metrics.
+- `src/takekeeper/benchmark_cli.py` — stable JSON benchmark runner and release gate.
 - `src/takekeeper/continuity.py` — deterministic continuity comparison.
-- `src/takekeeper/memory.py` — production-memory protocol and in-memory reference backend.
-- `src/takekeeper/clickhouse_memory.py` — separately permissioned ClickHouse application persistence adapter.
-- `src/takekeeper/mcp_reader.py` — bounded, fail-closed read-only MCP evidence adapter.
-- `src/takekeeper/review.py` — stable finding identity, append-only review stores, and scoped review service.
-- `src/takekeeper/review_api.py` — authenticated, framework-light WSGI boundary for evidence review and append-only decisions.
-- `src/takekeeper/review_console.py` — same-origin human-review UI wrapper; all API requests are delegated to `ReviewHttpApp`.
+- `src/takekeeper/memory.py` / `clickhouse_memory.py` — memory protocol and ClickHouse persistence.
+- `src/takekeeper/extraction_store.py` — extraction provenance/reconciliation persistence.
+- `src/takekeeper/mcp_reader.py` — bounded read-only official-MCP adapter.
+- `src/takekeeper/review.py`, `review_api.py`, `review_console.py` — human review boundary and UI.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
-- `src/takekeeper/queries.py` — ClickHouse analytical query contracts.
-- `tests/test_clickhouse_integration.py` — opt-in real-database acceptance harness with per-test fixture isolation and review-audit assertions.
-- `tests/test_mcp_reader.py` — MCP payload/scope/failure tests without credentials.
-- `tests/test_review.py` — credential-free human-review identity/scoping/persistence tests.
-- `tests/test_review_api.py` — authenticated review API boundary tests.
-- `tests/test_review_console.py` — operator-console CSP, token-storage, endpoint-capability, method, and delegation tests.
-- `tests/` — deterministic acceptance, pipeline, adapter, and query tests.
-- `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and Scene 28 fixture.
-- `progress.md` — exact current handoff.
+- `src/takekeeper/queries.py` — bounded analytical query contracts.
+- `sql/schema.sql` / `sql/seed_demo.sql` — durable schema and deterministic Scene 28 demo fixture.
+- `tests/fixtures/multimodal_eval/manifest.json` — labeled credential-free multimodal benchmark manifest.
+- `BENCHMARK.md` — benchmark semantics, thresholds, and usage.
+- `GEMINI_INTEGRATION.md` — provider setup and transport trust boundary.
+- `progress.md` — exact implementation handoff and next step.
 
-## Run tests
+## Run the credential-free suite
 
 Python 3.11+ is sufficient for the core:
 
@@ -52,23 +49,35 @@ Python 3.11+ is sufficient for the core:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The real ClickHouse integration suite is skipped by default. Install the official client extra and explicitly opt in when a disposable/local or otherwise authorized ClickHouse instance is available:
+## Run the multimodal benchmark gate
+
+Without installation:
+
+```bash
+PYTHONPATH=src python -m takekeeper.benchmark_cli \
+  tests/fixtures/multimodal_eval/manifest.json
+```
+
+Or install the local package and use the console entry point:
+
+```bash
+pip install -e .
+takekeeper-benchmark tests/fixtures/multimodal_eval/manifest.json
+```
+
+The benchmark emits `takekeeper-multimodal-benchmark-report-v1` JSON to stdout. Exit code `0` means all thresholds passed, `1` means the benchmark executed but quality regressed, and `2` means the benchmark input/configuration was invalid. Use `--output <path>` to archive the exact same stable report locally. See `BENCHMARK.md` for the full metric contract.
+
+The checked-in deterministic gate currently requires exact value/disposition/projection/finding correctness, evidence IoU@0.50 of 100%, mean evidence IoU of at least 0.80, and zero unsupported assertions. Real-model thresholds may be changed explicitly for experiments, but the report records the thresholds used; do not relabel truth after observing a model candidate.
+
+## ClickHouse application path
+
+Install the official client extra:
 
 ```bash
 pip install -e '.[clickhouse]'
-TAKEKEEPER_CLICKHOUSE_INTEGRATION=1 \
-CLICKHOUSE_HOST=localhost \
-CLICKHOUSE_PORT=8123 \
-CLICKHOUSE_USER=default \
-CLICKHOUSE_PASSWORD='' \
-PYTHONPATH=src python -m unittest tests.test_clickhouse_integration -v
 ```
 
-For ClickHouse Cloud, set `CLICKHOUSE_SECURE=true`, use the service port/credentials supplied by ClickHouse, and optionally set `CLICKHOUSE_BOOTSTRAP_DATABASE` if the credential does not default to `default`.
-
-The integration harness creates a uniquely named `takekeeper_it_<suffix>` database, rewrites the checked-in schema/seed to that isolated database, resets mutable tables and reapplies the deterministic seed before each test, runs assertions, and drops the database in teardown. **Only enable it with a credential that is allowed to create/drop a temporary database and truncate its own temporary tables.** No secrets are read from files or committed.
-
-Construct the official client outside the domain layer and pass it to `ClickHouseProductionMemory`:
+Construct the official client outside the domain layer and inject it into TakeKeeper:
 
 ```python
 import clickhouse_connect
@@ -83,71 +92,78 @@ client = clickhouse_connect.get_client(
 memory = ClickHouseProductionMemory(client)
 ```
 
-Use a separately permissioned application credential for this write adapter. Do **not** reuse the agent/MCP credential.
+Use a separately permissioned application credential for trusted writes. Do **not** reuse the agent/MCP credential.
 
-## ClickHouse + MCP boundary
+The opt-in real ClickHouse tests are skipped by default. Only enable them against a disposable/local or otherwise explicitly authorized instance because the harness creates and drops an isolated temporary database.
 
-The application persistence path may insert/update production memory. The agent-facing official `ClickHouse/mcp-clickhouse` connection remains read-only (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`) and is only used for analytical retrieval. This prevents model-directed writes from bypassing application validation and human-control boundaries.
+```bash
+TAKEKEEPER_CLICKHOUSE_INTEGRATION=1 \
+CLICKHOUSE_HOST=localhost \
+CLICKHOUSE_PORT=8123 \
+CLICKHOUSE_USER=default \
+CLICKHOUSE_PASSWORD='' \
+PYTHONPATH=src python -m unittest tests.test_clickhouse_integration -v
+```
 
-`McpEvidenceReader` accepts a host-supplied `call_tool(name, arguments)` function and only invokes `run_query` using TakeKeeper's own typed query builders. It does not expose an arbitrary SQL method to the model-facing layer. Continuity/editorial queries now project their scope identifiers so every returned row can be rejected if it crosses production, scene, or take boundaries.
+For ClickHouse Cloud, use the service endpoint/credentials supplied by ClickHouse and set secure transport as documented by the client.
 
-The parser supports the official server's current JSON-string query result plus MCP text-content envelopes and a small future-compatible structured wrapper. Transport failure, tool error, malformed JSON, malformed rows, wrong scope, impossible confidence, or invalid evidence windows all raise `McpReadError` instead of fabricating evidence.
+## ClickHouse MCP boundary
 
-Apply `sql/schema.sql`, then `sql/seed_demo.sql` to a real ClickHouse instance. The findings schema uses nullable evidence fields so `insufficient_evidence` and `missing_baseline` remain representable without fabricated values.
+The official `ClickHouse/mcp-clickhouse` connection is a read-only analytical boundary. Keep `CLICKHOUSE_ALLOW_WRITE_ACCESS=false` and use a distinct least-privilege credential.
+
+`McpEvidenceReader` accepts a host-supplied MCP `call_tool` transport and only invokes TakeKeeper-owned, parameterized analytical operations. It validates production/scene/take identifiers again on returned rows and fails closed on malformed results, tool errors, scope drift, impossible confidence, or invalid evidence windows. Agent-facing arbitrary SQL is intentionally not exposed.
+
+## Gemini / Vertex AI boundary
+
+Install provider support only when needed:
+
+```bash
+pip install -e '.[gemini]'
+```
+
+`GoogleGenAIExtractionTransport` handles provider communication, but provider JSON is never trusted directly. `GovernedMultimodalExtractor` still enforces configured properties/values, trusted production scope, evidence bounds, allowed source types, visibility/temporal support, and confidence policy before persistence or continuity projection.
+
+Only clear, sustained, non-abstaining `machine_high_confidence` observations may become current machine continuity facts. Occluded, weak, transient, or otherwise uncertain evidence remains historical evidence and produces `insufficient_evidence` rather than a fabricated mismatch.
+
+See `GEMINI_INTEGRATION.md` for Developer API / Vertex AI setup and media URI constraints.
 
 ## Human review boundary
 
-Continuity findings use a deterministic UUIDv5 identity derived from production, scene, take, entity, and property. The ID intentionally excludes mutable evidence values/status so the same logical continuity concern keeps one stable identity if a take is re-analyzed.
+Continuity findings use deterministic identities derived from trusted production, scene, take, entity, and property scope. Human decisions are append-only.
 
-`FindingReviewService` never accepts a raw finding ID from the caller. It first resolves the requested entity/property against the current findings in the requested production/scene/take scope, derives the stable finding ID internally, then appends `confirmed`, `rejected`, or `needs_followup` to the decision store. This prevents cross-tenant or stale arbitrary IDs from being written through the review API.
+The authenticated WSGI API exposes only bounded context reads and `confirmed`, `rejected`, or `needs_followup` decisions. Reviewer identity is derived from the configured identity provider rather than caller-supplied actor IDs. `ReviewConsoleApp` provides a same-origin dependency-free UI without adding a broader mutation primitive.
 
-`ClickHouseReviewDecisionStore` writes only to `human_decisions` using the trusted application connection and reads history with bound `production_id` + `finding_id` parameters. Decision history is append-only: prior human judgments are not overwritten when a later reviewer changes the disposition. The opt-in ClickHouse acceptance harness now verifies this contract against the real table by recording two decisions for the same deterministic finding identity and requiring both distinct decision rows to remain in chronological history.
+## Demo workflow
 
-`ReviewHttpApp` is a small WSGI application that exposes only:
-
-- `POST /v1/review/context` — resolve the current scoped finding and return evidence plus append-only review history.
-- `POST /v1/review/decision` — append one of `confirmed`, `rejected`, or `needs_followup` with an optional bounded note.
-
-Both routes require a reviewer identity provider. `StaticBearerIdentityProvider` is available for local/self-hosted deployments and maps operator-configured bearer tokens to stable actor IDs using constant-time token comparison. The request body is capped at 16 KiB, notes at 2,000 characters, unexpected fields are rejected, responses use `Cache-Control: no-store`, and callers cannot provide `actor_id` or `finding_id`. Put this app behind TLS in any non-loopback deployment and inject tokens through environment/secret management rather than source control.
-
-### Operator console
-
-Wrap an existing `ReviewHttpApp` to serve the minimal same-origin console:
-
-```python
-from takekeeper import ReviewConsoleApp
-
-app = ReviewConsoleApp(review_api)
-```
-
-`GET /review` serves a self-contained page with no external JavaScript, CSS, fonts, analytics, or asset dependencies. The bearer token is entered into a password input and is held only in the live page; the console intentionally does not use cookies, `localStorage`, or `sessionStorage`. Browser requests use only `/v1/review/context` and `/v1/review/decision` on the same origin. The page response is `no-store`, denies framing, disables referrers/content-type sniffing, and applies a restrictive CSP. The UI does **not** weaken the API boundary: `ReviewConsoleApp` delegates every API call unchanged to `ReviewHttpApp`, where authentication, request limits, scope validation, actor derivation, and append-only semantics remain authoritative.
-
-For production, terminate TLS before this WSGI application and replace the static bearer provider with deployment-native trusted identity when available. Do not expose the console over plaintext networking.
-
-## Hero workflow
-
-For fictional production `glass-house`, Scene 28, baseline `S28-T31` has Maya holding the mug in her right hand, jacket zipped, lamp on. `S28-T47` changes mug to left, jacket to open, and lamp to off at low confidence. The expected result is two mismatches plus one `needs_confirmation` finding.
-
-The editorial query asks for takes where Maya says “I'm leaving”, looks toward the door afterward, the boom is not visible, and rating ≥4. Expected includes are `S28-T31` and `S28-T47`; `S28-T40` is excluded for eyeline and `S28-T44` for a visible boom.
+The deterministic `glass-house` Scene 28 fixture contains continuity and editorial examples across takes. Apply `sql/schema.sql`, then `sql/seed_demo.sql` to an authorized ClickHouse instance to exercise the real persistence/read path.
 
 ## Safety and data boundaries
 
-ClickHouse owns durable production facts; object storage owns raw media; agent session state is temporary; official MCP is the analytical read path; ingestion and human decisions use a separately permissioned application write path.
+- ClickHouse owns durable structured production facts; raw media should live in object storage.
+- Production/scene/take scope comes from trusted application metadata, never from model output.
+- Machine perception is candidate evidence, not automatic human truth.
+- Extraction history is append-only; current machine projection is scoped replacement state.
+- Missing/abstaining evidence cannot become a false continuity mismatch.
+- Trusted writes and agent-facing MCP reads use separate credentials and capabilities.
+- Dynamic database identifiers are validated; values are parameter-bound.
+- No credential, API key, raw private media, or secret belongs in the repository or benchmark reports.
 
-Machine perception is candidate evidence, not automatic truth. Low-confidence differences request confirmation, and absent evidence never becomes fabricated absence. Tenant identifiers are scoped in generated analytical SQL and validated again on MCP response rows. Trusted persistence uses parameter binding; dynamic database identifiers are separately validated and restricted to letters, digits, and underscores.
+## Next production gates
 
-## Next milestone
-
-Run the opt-in real ClickHouse integration harness on a local/Cloud instance and record concrete ClickHouse/client versions and timings. Then start official `ClickHouse/mcp-clickhouse` in read-only mode against the seeded database, inject its `run_query` transport into `McpEvidenceReader`, prove the exact Scene 28 continuity/editorial results, and capture actual MCP version, transport, auth, payload, row count, latency, and explicit write-denial behavior.
-
-The review boundary now includes a safe authenticated HTTP API and an operator console without broadening the mutation surface. If the live ClickHouse/MCP gate remains unavailable, the next strongest unblocked increment is the governed Gemini multimodal extraction adapter with fixture-first evaluation before any real footage or production credential is required.
+1. Run the full credential-free suite in a normal checkout and fix any concrete failures.
+2. Add fixed self-owned/generated labeled clips corresponding to the benchmark truth without tuning labels after model output.
+3. Execute a live Gemini/Vertex candidate against those clips and archive its benchmark JSON.
+4. Execute the disposable ClickHouse integration suites against a real authorized instance.
+5. Start official `ClickHouse/mcp-clickhouse` read-only and record actual auth/transport/version behavior, query latency, result shape, and explicit write denial.
 
 ## References
 
 - https://clickhouse.com/integrations/python
 - https://github.com/ClickHouse/clickhouse-connect
 - https://github.com/ClickHouse/mcp-clickhouse
+- https://googleapis.github.io/python-genai/
 - https://ai.google.dev/gemini-api/docs/video-understanding
+- https://ai.google.dev/gemini-api/docs/structured-output
 
 ## License
 
