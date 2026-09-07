@@ -2,102 +2,101 @@
 
 ## Current status
 
-TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, trusted media provenance, immutable trusted media byte identity, bounded extraction-schema readiness, and schema-gated production ingestion.
+TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed Gemini/Vertex multimodal extraction, strict continuity projection, objective multimodal benchmarks, deterministic synthetic media, trusted media MIME/hash/byte provenance, immutable same-run retry identity, bounded schema readiness, schema-gated ingestion, an authenticated WSGI ingest API, and now a secret-safe environment-driven production composition layer.
 
-This run makes the schema-gated domain boundary usable by a real service layer. TakeKeeper now has a dependency-free authenticated WSGI ingest API with separate liveness/readiness semantics, bounded trusted request parsing, server-owned extractor/property policy, and fail-closed HTTP behavior when ClickHouse schema readiness is absent.
+This run closed the deployment-composition gap around `IngestHttpApp`. A production process can now construct the trusted ClickHouse application client, Gemini/Vertex client, governed extractor, ClickHouse provenance store, schema-gated ingest service, bearer identity adapter, and WSGI app from bounded environment configuration. The factory does not return a ready deployment until the extraction schema preflight succeeds.
 
 ## Inspected this run
 
-- Read the previous `progress.md` completely before deciding what to change.
-- Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and the connected account has push/admin permission.
-- Inspected `src/takekeeper/ingest_runtime.py` and confirmed `SchemaGatedIngestService` starts closed, rechecks ClickHouse schema before opening, and refuses extraction/persistence while unready.
-- Inspected `src/takekeeper/extraction.py` to preserve `TakeExtractionRequest`, trusted media provenance validation, configured `PropertySpec` policy, and server-trusted model/scope metadata.
-- Inspected `src/takekeeper/review_api.py` to reuse the existing bearer identity protocol and constant-time `StaticBearerIdentityProvider` rather than creating a second authentication abstraction.
-- Inspected `src/takekeeper/__init__.py` and `pyproject.toml`; the core package intentionally has no mandatory runtime dependencies, so the ingress was implemented as WSGI rather than introducing a web framework dependency.
-- Searched the repository for an existing health/readiness/ingest HTTP entrypoint and found none.
+- Read this `progress.md` completely before deciding what to change.
+- Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and the connected GitHub account has push/admin permission.
+- Inspected `src/takekeeper/ingest_api.py`, `ingest_runtime.py`, `extraction.py`, `google_genai_transport.py`, `extraction_store.py`, `schema_preflight.py`, `review_api.py`, `__init__.py`, `pyproject.toml`, `tests/test_ingest_api.py`, and `README.md`.
+- Confirmed the existing ingest boundary already separates liveness/readiness, authenticates before reading request bytes, keeps model/property policy server-owned, and routes ingestion only through `SchemaGatedIngestService`.
+- Confirmed `create_google_genai_client(...)` supports Gemini Developer API and Vertex AI while deferring optional SDK import until runtime.
+- Confirmed `ClickHouseExtractionProvenanceStore` and schema preflight use the trusted application client and remain separate from read-only MCP.
+- Checked current official ClickHouse Python guidance: `clickhouse_connect.get_client(...)` remains the documented Python path and ClickHouse Cloud examples use secure port 8443.
+- Checked current Google Gen AI SDK documentation for the server-side API-key vs Vertex project/location client split.
 
 ## Exact changes made this run
 
-### Authenticated production ingest HTTP boundary
+### Environment-driven production composition
 
-Added `src/takekeeper/ingest_api.py` with `IngestHttpApp`.
+Added `src/takekeeper/production_ingest.py` with:
 
-Endpoints:
+- `ProductionIngestConfig.from_environ(...)`;
+- `ProductionIngestConfigurationError` for bounded field-name-only configuration failures;
+- `ProductionIngestStartupError` for coarse startup failures;
+- `ProductionIngestDeployment` containing the app and schema-gated service;
+- `build_ingest_deployment_from_env(...)` for injectable/testable composition;
+- `create_wsgi_app_from_env(...)` for WSGI server factories.
 
-- `GET /healthz` — process liveness only; independent of ClickHouse and unauthenticated for platform probes.
-- `GET /readyz` — coarse `SchemaGatedIngestService` readiness; HTTP 200 only while ingestion is open, otherwise HTTP 503.
-- `POST /v1/ingest` — authenticated trusted-take ingestion routed exclusively through `SchemaGatedIngestService.ingest(...)`.
+The composition path constructs, in order:
 
-The POST path authenticates before reading attacker-controlled request bytes.
+1. trusted ClickHouse application client;
+2. Google Gen AI / Vertex client;
+3. `GoogleGenAIExtractionTransport`;
+4. `GovernedMultimodalExtractor`;
+5. `ClickHouseExtractionProvenanceStore`;
+6. `SchemaGatedIngestService`;
+7. `StaticBearerIdentityProvider`;
+8. `IngestHttpApp`;
+9. schema readiness via `service.start()`.
 
-### Server-owned extraction policy
+The deployment is returned only after step 9 succeeds.
 
-The HTTP caller cannot supply or override:
+### Fail-closed configuration
 
-- extractor/Gemini model identity;
-- extractor implementation version;
-- prompt schema version;
-- arbitrary `PropertySpec` definitions;
-- arbitrary allowed values for continuity properties.
+Production composition now requires bounded environment configuration for ClickHouse, provider mode/model, extractor version, and ingest authentication.
 
-Instead, deployments register named property profiles when constructing `IngestHttpApp`; requests can select only a configured profile name. This keeps mappings configurable for real productions without letting a network caller redefine the extraction trust boundary.
+- ClickHouse Cloud-oriented defaults are secure transport with port 8443; deployments may explicitly override port/secure for secured self-hosted endpoints.
+- Vertex mode requires project/location and rejects a TakeKeeper Gemini API-key variable.
+- Developer API mode requires a server-side API key and rejects Vertex project/location variables.
+- The production factory requires a non-empty ClickHouse password and an ingest bearer token of at least 32 characters.
+- No model ID is silently selected by the factory; `TAKEKEEPER_GEMINI_MODEL` is operator-owned deployment configuration.
 
-### Bounded request contract
+### Secret handling hardening
 
-The ingress enforces:
+During review, found that a normal dataclass `repr()` would expose parsed passwords/API keys/tokens if deployment config were logged. Fixed this before handoff:
 
-- 32 KiB maximum JSON body;
-- JSON object only;
-- exact allow-listed fields with unknown fields rejected;
-- bounded production/scene/take/profile identifiers;
-- 4096-character media locator ceiling;
-- positive integer duration capped at 24 hours;
-- optional MIME/hash/byte-size primitive-type checks followed by canonical `TakeExtractionRequest` domain validation;
-- exact body-length reads so truncated bodies fail closed.
+- ClickHouse password, Gemini API key, and ingest bearer token fields are `repr=False`.
+- Provider/driver exceptions are converted at the composition trust boundary to a fixed `ProductionIngestStartupError` and exception context is suppressed with `from None`, because SDK/driver errors can contain endpoints or connection details.
+- Configuration errors name environment variables only and never echo their values.
+- `ProductionIngestDeployment` does not retain/expose the parsed config object; it contains only the app and service.
 
-The API never accepts SQL, ClickHouse table names, MCP operations, model prompts, arbitrary schemas, or migration instructions.
+### Server-owned property profiles
 
-### Failure/privacy behavior
-
-- unready ingestion returns HTTP 503 and cannot reach the extractor/provenance store through the gated service;
-- invalid/absent credentials return a fixed authentication response without echoing tokens;
-- malformed payloads return a fixed `invalid request` response;
-- unexpected provider/runtime failures return fixed `internal server error` without copying ClickHouse/Gemini exception text;
-- all responses set `Cache-Control: no-store`;
-- successful responses expose only run ID, trusted production/scene/take IDs, and observation count; media URI/hash/size and model output are not echoed;
-- readiness exposes only `ready|not_ready` plus `schema_checked`, with no ClickHouse host/database/schema diff/provider detail.
+`build_ingest_deployment_from_env(..., property_profiles=...)` accepts trusted deployment-owned `PropertySpec` mappings. HTTP callers still cannot define schemas/values; they can only select registered profile names. The environment-only WSGI factory defaults to the built-in `hero` profile.
 
 ### Regression coverage
 
-Added `tests/test_ingest_api.py` covering:
+Added `tests/test_production_ingest.py` covering:
 
-- liveness independent of ClickHouse readiness;
-- coarse readiness transitions and HTTP 503 fail-closed behavior;
-- unready ingestion admitting no service request;
-- successful authenticated ingress;
-- server-owned model/version/property profile enforcement;
-- unknown property-profile rejection;
-- authentication before body read;
-- invalid-token redaction;
-- oversized body rejection;
-- media provenance validation through the canonical domain contract;
-- unexpected provider/service detail redaction.
+- successful Vertex-mode composition;
+- exactly two schema-preflight metadata queries before readiness opens;
+- schema drift failing startup closed;
+- missing configuration failing before provider factories are called;
+- secret values absent from `ProductionIngestConfig.__repr__`;
+- provider failure messages not appearing in the public startup error;
+- Vertex/Developer configuration separation;
+- short bearer-token rejection without value echo.
 
-Tests use fakes and require no ClickHouse, Gemini, object storage, production media, or credentials.
+The schema fake never permits inserts, proving composition/preflight itself is metadata-read-only.
 
 ### Public API and documentation
 
-- Exported `IngestHttpApp` from `takekeeper`.
-- Added `INGEST_API.md` documenting lifecycle composition, endpoint semantics, server-owned policy, request bounds, failure behavior, privilege separation, private-media guidance, and credential-free test coverage.
+- Exported production composition classes/functions from `takekeeper.__init__`.
+- Added `PRODUCTION_INGEST.md` with environment variables, ClickHouse Cloud/Vertex example, WSGI composition, startup ordering, secret behavior, server-owned profile injection, privilege separation, and local/self-hosted notes.
+- Updated `README.md` so repository map/current capabilities/production gates include schema-gated HTTP ingestion and production composition instead of the older stale ingest backlog.
+- Recorded current official ClickHouse Python and Google Gen AI SDK references in the documentation.
 
 ### Repository safety
 
 - No GitHub Actions workflow was added, modified, triggered, or rerun.
 - No unrelated repository was touched.
-- No Gemini/Vertex, ClickHouse, object-storage, or private-media credential was used.
-- No production media was accessed or modified.
+- No ClickHouse, Gemini/Vertex, object-storage, MCP, or production-media credential was used.
+- No cloud resource or production media was accessed or modified.
 - No destructive ClickHouse operation was introduced.
-- ClickHouse MCP remains read-only and separate from trusted application writes.
+- Official ClickHouse MCP remains read-only and separately permissioned from application writes.
 
 ## Validation / results
 
@@ -105,22 +104,35 @@ Files were written directly to `UnknownGod2011/ClickHouse` `main` through the au
 
 Implementation commits before this handoff update:
 
-- `d1c8ced28d891450205db639e48247356ec96f70` — authenticated schema-gated ingest HTTP boundary;
-- `4efb303421d5acb124abbd60e8623762560169a7` — ingest HTTP readiness/security regression tests;
-- `fcc3bac80c61c5595989bace97a319654288c37e` — public `IngestHttpApp` export;
-- `e911d00727b3fcc9bdfdfe08fae3700ae8439de8` — production ingest API documentation.
+- `a222a15812fdc8787200ab3bdc4680007652597d` — initial secret-safe production ingest composition;
+- `a43e5646bb0acefcbcc99b2de5c7125c447edeb2` — redact production ingest secrets from config repr;
+- `b69dee4c3ea2d12b06285e9e599a48f89264d667` — production composition/security regression coverage;
+- `a769fdffa0fc9cd34fe80fc905fd00a798a6ed8d` — public production composition exports;
+- `ec1a8f742fa0d310f6f0812d23660545b75d149d` — hardened startup exception handling and server-owned profile injection;
+- `dd5048c1bf2d3cb1d2d7c55470fb22a935cbcb2f` — production ingest deployment documentation;
+- `609b68346b7e32665f58ce075dbd45961b7f7acb` — coherent README production-ingest update.
 
-Structural review performed:
+Structural review performed after writing:
 
-- verified authentication runs before `_read_json_body` on POST ingestion;
-- verified `/healthz` does not call ClickHouse/readiness and `/readyz` exposes only the coarse domain state;
-- verified POST ingestion has no alternate path around `SchemaGatedIngestService.ingest`;
-- verified caller JSON cannot set extractor model/version/prompt schema or inline property registries;
-- verified response/error payloads do not echo media provenance, credentials, or provider exception text;
-- verified no new mandatory package dependency or CI workflow was introduced;
-- re-fetched `tests/test_ingest_api.py` from `main` after writing it to confirm the committed content.
+- re-fetched `src/takekeeper/production_ingest.py` from `main` and verified secrets are `repr=False`;
+- verified provider exceptions are suppressed at the startup boundary;
+- verified `service.start()` is the final operation before a deployment is returned;
+- verified ClickHouse schema preflight and persistence receive the same trusted application client;
+- verified MCP construction/credentials are absent from this composition path;
+- re-fetched `tests/test_production_ingest.py` from `main` and checked the intended fail-closed/secret-redaction cases are committed.
 
-Executable validation is still unavailable in this automation environment because a runnable repository checkout is not exposed to the execution container. I therefore do **not** claim `tests/test_ingest_api.py`, `tests/test_ingest_runtime.py`, or the full Python suite passes here. No GitHub Actions run was used as a workaround.
+Executable validation attempt:
+
+```text
+git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git /tmp/takekeeper-check
+PYTHONPATH=src python -m unittest \
+  tests.test_production_ingest \
+  tests.test_ingest_api \
+  tests.test_ingest_runtime \
+  tests.test_schema_preflight -v
+```
+
+The execution container failed at clone with `Could not resolve host: github.com`, so Python never started. This is an environment/network blocker, not a test result. I therefore do **not** claim the new or existing suites pass here. GitHub Actions were deliberately not used as a workaround.
 
 No live Gemini/Vertex request, real ClickHouse request, official MCP session, ffmpeg rendering, or production-media operation was performed.
 
@@ -141,50 +153,52 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 13. MIME/suffix disagreement fails closed.
 14. Signed/private media URI values and content hashes must not be copied into prompts, logs, benchmark reports, or operator-visible error strings unless explicitly required by a trusted administrative surface.
 15. A persisted same-`run_id` retry must match locator fingerprint, trusted MIME metadata, content SHA-256, byte size, duration, scope, extractor identity, and prompt schema before reconciliation can continue.
-16. Benchmark thresholds remain immutable after observing a candidate.
-17. Live-service quality/security claims require real authorized execution and are not inferred from mocks.
-18. Application/schema compatibility must be checked before enabling extraction ingestion; the first production take must never serve as the migration detector.
-19. Schema readiness is metadata-read-only and must not implicitly grant migration privileges to the normal application connection.
-20. Production extraction ingress starts closed and must route through `SchemaGatedIngestService`; successful schema preflight is required before Gemini/extraction or provenance persistence can run.
-21. Revalidation revokes readiness before checking, so a failed schema recheck always leaves ingestion closed.
-22. Network callers may select only server-configured property profiles; they cannot define model identity, prompt schema, or property/value registries.
-23. Liveness and ingestion readiness are separate contracts: a healthy process may intentionally return unready while ClickHouse/schema safety is unresolved.
-24. Production ingest HTTP errors are bounded and must not copy provider exception detail, media provenance, or credentials into responses.
+16. Application/schema compatibility must be checked before enabling extraction ingestion; the first production take must never serve as the migration detector.
+17. Schema readiness is metadata-read-only and must not implicitly grant migration privileges to the normal application connection.
+18. Production extraction ingress starts closed and must route through `SchemaGatedIngestService`.
+19. Revalidation revokes readiness before checking, so a failed schema recheck always leaves ingestion closed.
+20. Network callers may select only server-configured property profiles; they cannot define model identity, prompt schema, property registries, SQL, or migrations.
+21. Liveness and ingestion readiness are separate contracts.
+22. Production ingest HTTP errors are bounded and must not copy provider exception detail, media provenance, or credentials into responses.
+23. Production composition must obtain secrets from environment/secret injection rather than argv.
+24. Production composition must not expose secret fields through dataclass reprs or chained provider errors.
+25. Vertex and Developer API authority configuration must be mutually exclusive in the production factory.
+26. A production deployment object is returned only after the trusted ClickHouse extraction-schema preflight succeeds.
 
 ## Gates
 
-- **Gate A — live ClickHouse:** implementation/harness coverage exists; schema readiness is implemented, enforced, and surfaced through coarse HTTP readiness; real-endpoint execution remains pending.
+- **Gate A — live ClickHouse:** schema readiness is implemented/enforced through production composition; real-endpoint execution remains pending.
 - **Gate B — continuity correctness:** deterministic comparison, persistence, governed projection, and stale-state convergence are implemented.
 - **Gate C — evidence/review:** durable evidence, stable finding identity, append-only review, authenticated API, and operator console are implemented.
 - **Gate D — editorial retrieval:** typed/bounded retrieval and SQL coverage exist; live official MCP execution remains pending.
-- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness/ingest-bootstrap/HTTP-ingress paths fail closed structurally; abstentions cannot become false mismatches.
-- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review/ingest, trusted extraction scope, replacement isolation, immutable run retry identity, metadata-only preflight, closed-by-default ingestion, and server-owned extraction policy are implemented structurally; live RBAC/write-denial proof remains pending.
-- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, byte identity, schema support, canonical ClickHouse persistence, rollout-skew detection, schema-gated ingestion, and bounded HTTP ingress exist; live execution remains pending.
+- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness/ingest-bootstrap/HTTP/composition paths fail closed structurally; abstentions cannot become false mismatches.
+- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review/ingest, immutable retry identity, metadata-only preflight, server-owned extraction policy, secret-safe composition, and startup gating are implemented structurally; live RBAC/workload-identity/write-denial proof remains pending.
+- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME/byte identity, schema support, persistence, rollout-skew detection, HTTP ingress, and production composition exist; live execution remains pending.
 
 ## Blockers / unknowns
 
-1. A runnable local repository checkout is unavailable in this execution environment, so Python tests and ClickHouse DDL validation remain unexecuted here.
+1. The execution container cannot currently resolve `github.com`, so a normal checkout and Python test execution remain unavailable from this run.
 2. No reachable authorized disposable ClickHouse endpoint is available.
 3. No Gemini/Vertex credentials or trusted uploaded benchmark media are available.
 4. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
 5. Live `google-genai` video/schema behavior, latency, token usage, and provider failure modes remain unmeasured.
-6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before the updated persistence adapter writes the new fields; startup detects this rollout skew and refuses ingestion.
+6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before updated persistence writes; startup preflight detects the skew and refuses ingestion.
 7. Local SHA-256 hashing cannot prove immutability if another writer replaces same-length bytes during the read; production ingest should hash immutable/staged objects or use object generation/version guarantees.
 8. A real ClickHouse validation is still needed to confirm exact driver type strings and nullable `FixedString(64)` round trips under selected ClickHouse/clickhouse-connect versions.
-9. `IngestHttpApp` is a production-safe WSGI application boundary, but the repository does not yet have an environment-driven composition factory/serve command that constructs the actual ClickHouse client, provenance store, Gemini transport, identity provider, profiles, and schema-gated service for Cloud Run/self-hosted deployment.
-10. Rate limiting/TLS/network policy remain deployment responsibilities and have not been empirically exercised.
+9. Static bearer authentication is appropriate for local/self-hosted trusted deployments but Cloud Run production should gain a workload-identity/IAP/OIDC adapter rather than depending only on a long-lived shared token.
+10. Rate limiting, TLS termination/network policy, and WSGI server process behavior remain deployment responsibilities and have not been empirically exercised.
 
 ## Highest-priority backlog
 
-- Add an environment-driven production composition module/CLI that constructs the trusted ClickHouse client, Gemini transport, provenance store, schema-gated ingest service, bearer/workload identity adapter, and `IngestHttpApp` without exposing secrets in argv/logs; keep serving mechanism pluggable for Cloud Run/self-hosted WSGI.
-- Run `tests/test_ingest_api.py`, `tests/test_ingest_runtime.py`, `tests/test_schema_preflight.py`, `tests/test_extraction_media_persistence.py`, `tests/test_extraction_store.py`, and the full credential-free suite in a normal checkout; fix integration/type issues discovered.
-- Run schema preflight, migration 002, extraction retry, and projection replacement against a disposable real ClickHouse instance.
+- Run `tests/test_production_ingest.py`, `tests/test_ingest_api.py`, `tests/test_ingest_runtime.py`, `tests/test_schema_preflight.py`, extraction persistence tests, and the full credential-free suite in a runnable checkout; fix any concrete integration/type issues.
+- Add a workload-identity/IAP/OIDC `ReviewerIdentityProvider` implementation for production Cloud Run while retaining `StaticBearerIdentityProvider` for local/self-hosted setups.
+- Run production composition plus migration 002/schema preflight against a disposable authorized ClickHouse instance and verify readiness transitions empirically.
 - Run the deterministic ffmpeg fixture generator and `takekeeper-live-benchmark` against one authorized Gemini/Vertex candidate using self-owned generated media.
 - Start official `ClickHouse/mcp-clickhouse` read-only, exercise continuity/editorial operations, and record explicit write denial.
 
 ## Single best next step
 
-**Add the environment-driven production composition factory around `IngestHttpApp`: construct ClickHouse/Gemini/provenance dependencies from secret-safe environment configuration, call `SchemaGatedIngestService.start()` before readiness can become 200, define server-owned property profiles, and add credential-free composition tests proving missing/invalid configuration fails closed without leaking secret values.**
+**Add a production Google Cloud identity adapter for `IngestHttpApp` (IAP/OIDC/workload identity): verify signed Google identity tokens server-side, map only trusted claims to an actor, preserve the existing narrow `ReviewerIdentityProvider` protocol, keep static bearer auth for local/self-hosted use, and add credential-free token-verifier tests proving invalid audience/issuer/expiry fails closed without leaking token contents.**
 
 ## Relevant implementation references
 
