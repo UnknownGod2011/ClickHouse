@@ -34,6 +34,12 @@ from .extraction_store import (
     media_fingerprint,
     observation_record_id,
 )
+from .google_genai_transport import (
+    GoogleGenAIExtractionTransport,
+    GoogleGenAITransportConfig,
+    GoogleGenAITransportError,
+    create_google_genai_client,
+)
 from .mcp_reader import (
     ContinuityEvidenceRow,
     EditorialHit,
@@ -78,6 +84,9 @@ __all__ = [
     "Finding",
     "FindingReviewService",
     "FixtureExtractionTransport",
+    "GoogleGenAIExtractionTransport",
+    "GoogleGenAITransportConfig",
+    "GoogleGenAITransportError",
     "GovernedMultimodalExtractor",
     "HERO_PROPERTY_REGISTRY",
     "InMemoryExtractionProvenanceStore",
@@ -102,6 +111,7 @@ __all__ = [
     "build_extraction_prompt",
     "compare_extraction_to_baselines",
     "compare_observations",
+    "create_google_genai_client",
     "evaluate_extraction",
     "media_fingerprint",
     "observation_record_id",
