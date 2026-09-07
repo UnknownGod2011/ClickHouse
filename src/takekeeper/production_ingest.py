@@ -11,12 +11,14 @@ from .google_genai_transport import (
     GoogleGenAITransportConfig,
     create_google_genai_client,
 )
+from .google_identity import GoogleOidcIdentityProvider, IapIdentityProvider
 from .ingest_api import IngestHttpApp
 from .ingest_runtime import SchemaGatedIngestService
-from .review_api import StaticBearerIdentityProvider
+from .review_api import ReviewerIdentityProvider, StaticBearerIdentityProvider
 
 ClickHouseClientFactory = Callable[..., Any]
 GenAIClientFactory = Callable[..., Any]
+IdentityProviderFactory = Callable[["ProductionIngestConfig"], tuple[ReviewerIdentityProvider, str]]
 
 
 class ProductionIngestConfigurationError(RuntimeError):
@@ -45,8 +47,10 @@ class ProductionIngestConfig:
     google_cloud_location: str | None = None
     extractor_version: str = ""
     prompt_schema_version: str = "takekeeper-extraction-v1"
-    ingest_bearer_token: str = field(default="", repr=False)
+    ingest_identity_mode: str = "static"
+    ingest_bearer_token: str | None = field(default=None, repr=False)
     ingest_actor_id: str = "ingest-api"
+    ingest_expected_audience: str | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] | None = None) -> "ProductionIngestConfig":
@@ -89,8 +93,29 @@ class ProductionIngestConfig:
                     "Vertex project/location must not be set in developer mode"
                 )
 
-        bearer = _required_secret(env, "TAKEKEEPER_INGEST_BEARER_TOKEN", minimum_length=32)
+        identity_mode = _optional(env, "TAKEKEEPER_INGEST_IDENTITY_MODE", "static", max_length=32).lower()
+        if identity_mode not in {"static", "google_oidc", "iap"}:
+            raise ProductionIngestConfigurationError("invalid TAKEKEEPER_INGEST_IDENTITY_MODE")
+
+        bearer: str | None = None
         actor = _optional(env, "TAKEKEEPER_INGEST_ACTOR_ID", "ingest-api", max_length=128)
+        audience: str | None = None
+        if identity_mode == "static":
+            bearer = _required_secret(env, "TAKEKEEPER_INGEST_BEARER_TOKEN", minimum_length=32)
+            if env.get("TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"):
+                raise ProductionIngestConfigurationError(
+                    "TAKEKEEPER_INGEST_EXPECTED_AUDIENCE must not be set in static identity mode"
+                )
+        else:
+            audience = _required(env, "TAKEKEEPER_INGEST_EXPECTED_AUDIENCE", max_length=2_048)
+            if env.get("TAKEKEEPER_INGEST_BEARER_TOKEN"):
+                raise ProductionIngestConfigurationError(
+                    "TAKEKEEPER_INGEST_BEARER_TOKEN must not be set in Google identity mode"
+                )
+            if env.get("TAKEKEEPER_INGEST_ACTOR_ID"):
+                raise ProductionIngestConfigurationError(
+                    "TAKEKEEPER_INGEST_ACTOR_ID must not be set in Google identity mode"
+                )
 
         return cls(
             clickhouse_host=host,
@@ -106,8 +131,10 @@ class ProductionIngestConfig:
             google_cloud_location=location,
             extractor_version=extractor_version,
             prompt_schema_version=prompt_schema_version,
+            ingest_identity_mode=identity_mode,
             ingest_bearer_token=bearer,
             ingest_actor_id=actor,
+            ingest_expected_audience=audience,
         )
 
 
@@ -127,11 +154,31 @@ def _default_clickhouse_client_factory(**kwargs: Any) -> Any:
     return clickhouse_connect.get_client(**kwargs)
 
 
+def _default_identity_provider_factory(
+    config: ProductionIngestConfig,
+) -> tuple[ReviewerIdentityProvider, str]:
+    if config.ingest_identity_mode == "static":
+        if config.ingest_bearer_token is None:
+            raise ProductionIngestConfigurationError("missing TAKEKEEPER_INGEST_BEARER_TOKEN")
+        return (
+            StaticBearerIdentityProvider({config.ingest_bearer_token: config.ingest_actor_id}),
+            "HTTP_AUTHORIZATION",
+        )
+    if config.ingest_expected_audience is None:
+        raise ProductionIngestConfigurationError("missing TAKEKEEPER_INGEST_EXPECTED_AUDIENCE")
+    if config.ingest_identity_mode == "google_oidc":
+        return GoogleOidcIdentityProvider(config.ingest_expected_audience), "HTTP_AUTHORIZATION"
+    if config.ingest_identity_mode == "iap":
+        return IapIdentityProvider(config.ingest_expected_audience), "HTTP_X_GOOG_IAP_JWT_ASSERTION"
+    raise ProductionIngestConfigurationError("invalid TAKEKEEPER_INGEST_IDENTITY_MODE")
+
+
 def build_ingest_deployment_from_env(
     environ: Mapping[str, str] | None = None,
     *,
     clickhouse_client_factory: ClickHouseClientFactory | None = None,
     genai_client_factory: GenAIClientFactory | None = None,
+    identity_provider_factory: IdentityProviderFactory | None = None,
     property_profiles: Mapping[str, Sequence[PropertySpec]] | None = None,
 ) -> ProductionIngestDeployment:
     """Compose and open the trusted production ingestion stack from environment config.
@@ -145,6 +192,7 @@ def build_ingest_deployment_from_env(
     config = ProductionIngestConfig.from_environ(environ)
     clickhouse_factory = clickhouse_client_factory or _default_clickhouse_client_factory
     google_factory = genai_client_factory or create_google_genai_client
+    identity_factory = identity_provider_factory or _default_identity_provider_factory
     profiles = {"hero": HERO_PROPERTY_REGISTRY} if property_profiles is None else property_profiles
 
     try:
@@ -177,9 +225,7 @@ def build_ingest_deployment_from_env(
             provenance_store=provenance_store,
             database=config.clickhouse_database,
         )
-        identity = StaticBearerIdentityProvider(
-            {config.ingest_bearer_token: config.ingest_actor_id}
-        )
+        identity, credential_environ_key = identity_factory(config)
         app = IngestHttpApp(
             service,
             identity,
@@ -187,6 +233,7 @@ def build_ingest_deployment_from_env(
             extractor_model=config.gemini_model,
             extractor_version=config.extractor_version,
             prompt_schema_version=config.prompt_schema_version,
+            credential_environ_key=credential_environ_key,
         )
         # This is deliberately last. Construction alone can never make /readyz return 200.
         service.start()
@@ -194,8 +241,8 @@ def build_ingest_deployment_from_env(
     except ProductionIngestConfigurationError:
         raise
     except Exception:
-        # Suppress provider exception context because SDK/driver messages can contain endpoints,
-        # connection strings, or other deployment details that must not enter startup logs.
+        # Suppress provider exception context because SDK/driver/auth errors can contain tokens,
+        # endpoints, connection strings, or other details that must not enter startup logs.
         raise ProductionIngestStartupError(
             "TakeKeeper production ingestion could not start safely."
         ) from None
