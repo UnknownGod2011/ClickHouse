@@ -57,6 +57,14 @@ from .mcp_reader import (
 )
 from .memory import InMemoryProductionMemory, ProductionMemory
 from .models import Baseline, Finding, Observation
+from .production_ingest import (
+    ProductionIngestConfig,
+    ProductionIngestConfigurationError,
+    ProductionIngestDeployment,
+    ProductionIngestStartupError,
+    build_ingest_deployment_from_env,
+    create_wsgi_app_from_env,
+)
 from .review import (
     ClickHouseReviewDecisionStore,
     FindingReviewService,
@@ -109,6 +117,10 @@ __all__ = [
     "McpQueryTrace",
     "McpReadError",
     "Observation",
+    "ProductionIngestConfig",
+    "ProductionIngestConfigurationError",
+    "ProductionIngestDeployment",
+    "ProductionIngestStartupError",
     "ProductionMemory",
     "ProjectionDecision",
     "PropertySpec",
@@ -123,9 +135,11 @@ __all__ = [
     "TakeExtractionRequest",
     "TruthObservation",
     "build_extraction_prompt",
+    "build_ingest_deployment_from_env",
     "compare_extraction_to_baselines",
     "compare_observations",
     "create_google_genai_client",
+    "create_wsgi_app_from_env",
     "evaluate_extraction",
     "media_fingerprint",
     "observation_record_id",
