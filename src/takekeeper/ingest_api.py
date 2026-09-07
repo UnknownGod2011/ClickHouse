@@ -43,6 +43,7 @@ class IngestHttpApp:
         extractor_model: str,
         extractor_version: str,
         prompt_schema_version: str = "takekeeper-extraction-v1",
+        credential_environ_key: str = "HTTP_AUTHORIZATION",
     ) -> None:
         self._service = service
         self._identity = identity
@@ -58,9 +59,17 @@ class IngestHttpApp:
             self._profiles[profile] = values
         if not extractor_model.strip() or not extractor_version.strip() or not prompt_schema_version.strip():
             raise ValueError("extractor identity must be configured")
+        if (
+            not isinstance(credential_environ_key, str)
+            or not credential_environ_key.startswith("HTTP_")
+            or len(credential_environ_key) > 128
+            or not all(ch.isupper() or ch.isdigit() or ch == "_" for ch in credential_environ_key)
+        ):
+            raise ValueError("invalid credential environ key")
         self._extractor_model = extractor_model.strip()
         self._extractor_version = extractor_version.strip()
         self._prompt_schema_version = prompt_schema_version.strip()
+        self._credential_environ_key = credential_environ_key
 
     def __call__(self, environ, start_response):
         try:
@@ -108,8 +117,9 @@ class IngestHttpApp:
         if method != "POST":
             return 405, {"error": "method not allowed"}
 
-        # Authenticate before reading attacker-controlled request bytes.
-        self._identity.authenticate(environ.get("HTTP_AUTHORIZATION"))
+        # Authenticate before reading attacker-controlled request bytes. Deployments may source
+        # credentials from Authorization or a verified reverse-proxy assertion header such as IAP.
+        self._identity.authenticate(environ.get(self._credential_environ_key))
         payload = _read_json_body(environ)
         request = self._request_from_payload(payload)
         ingested = self._service.ingest(request)
