@@ -17,6 +17,13 @@ from .extraction import (
     build_extraction_prompt,
 )
 from .extraction_eval import ExtractionEvaluation, TruthObservation, evaluate_extraction
+from .extraction_projection import (
+    ContinuityProjection,
+    ExtractionProjectionError,
+    ProjectionDecision,
+    compare_extraction_to_baselines,
+    project_extraction_for_continuity,
+)
 from .extraction_store import (
     ClickHouseExtractionProvenanceStore,
     ExtractedObservationRecord,
@@ -54,12 +61,14 @@ __all__ = [
     "ClickHouseProductionMemory",
     "ClickHouseReviewDecisionStore",
     "ContinuityEvidenceRow",
+    "ContinuityProjection",
     "EditorialHit",
     "ExtractedObservation",
     "ExtractedObservationRecord",
     "ExtractionError",
     "ExtractionEvaluation",
     "ExtractionPersistenceError",
+    "ExtractionProjectionError",
     "ExtractionPrompt",
     "ExtractionProvenanceStore",
     "ExtractionRunRecord",
@@ -79,6 +88,7 @@ __all__ = [
     "McpReadError",
     "Observation",
     "ProductionMemory",
+    "ProjectionDecision",
     "PropertySpec",
     "ReviewConsoleApp",
     "ReviewDecision",
@@ -90,9 +100,11 @@ __all__ = [
     "TakeExtractionRequest",
     "TruthObservation",
     "build_extraction_prompt",
+    "compare_extraction_to_baselines",
     "compare_observations",
     "evaluate_extraction",
     "media_fingerprint",
     "observation_record_id",
+    "project_extraction_for_continuity",
     "stable_finding_id",
 ]
