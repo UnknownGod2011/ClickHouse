@@ -2,76 +2,84 @@
 
 ## Current status
 
-TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, live external-media candidate evaluation, and trusted media provenance.
+TakeKeeper is a personal open-source production-memory system with deterministic continuity comparison, ClickHouse-backed state, bounded read-only ClickHouse MCP access, append-only extraction/review provenance, governed multimodal extraction, fail-closed continuity projection, Gemini/Vertex transport, objective multimodal benchmarks, deterministic synthetic-video generation, live external-media candidate evaluation, trusted media provenance, immutable trusted media byte identity, and a bounded extraction-schema readiness gate.
 
-This run completes the persistence half of trusted media provenance. The canonical ClickHouse extraction store now writes, reads, and immutably reconciles trusted media MIME type, SHA-256 byte identity, and byte size in addition to the existing locator fingerprint. A retry may resume an identical partially persisted run, but reusing the same `run_id` with different trusted media bytes, MIME metadata, or byte size now fails closed before any observation reconciliation proceeds.
+This run adds a production deployment preflight for the trusted ClickHouse application connection. TakeKeeper can now verify the exact `extraction_runs` and `extracted_observations` column/type contract before enabling ingestion, including the MIME/SHA-256/byte-size fields introduced by migration 002. Schema drift fails closed with a coarse actionable migration message instead of surfacing during the first production extraction.
 
 ## Inspected this run
 
 - Read the previous `progress.md` completely before deciding what to change.
 - Confirmed `UnknownGod2011/ClickHouse` on `main` is the intended repository and the connected account has push/admin permission.
-- Inspected the canonical persistence path in `src/takekeeper/extraction_store.py`.
-- Inspected `TakeExtractionRequest` trusted media fields and validation in `src/takekeeper/extraction.py`.
-- Inspected the ClickHouse client protocol in `src/takekeeper/clickhouse_memory.py`.
-- Inspected `tests/test_extraction_store.py` to preserve existing append-only in-memory semantics and tenant-scoped reads.
-- Rechecked `sql/migrations/002_extraction_media_provenance.sql`; the existing additive migration matches the application columns now being written.
-- Attempted a clean local clone for executable validation. DNS resolution for `github.com` still failed before checkout, so no local Python process could run against repository files.
+- Inspected `src/takekeeper/extraction_store.py` and confirmed the trusted media provenance fields are now part of `_RUN_COLUMNS`, reads, writes, and immutable retry reconciliation.
+- Inspected the trusted ClickHouse client protocol in `src/takekeeper/clickhouse_memory.py`.
+- Inspected `sql/schema.sql` and `sql/migrations/002_extraction_media_provenance.sql` to derive the exact application schema contract.
+- Inspected `pyproject.toml`; no new dependency is required for the preflight.
+- Searched for an existing schema/readiness implementation and found none.
+- Attempted executable validation from a clean clone; the runtime still cannot resolve `github.com`, so Python could not start against the repository checkout.
 
 ## Exact changes made this run
 
-### Extraction run records now retain trusted byte identity
+### Bounded extraction schema preflight
 
-Updated `src/takekeeper/extraction_store.py`:
+Added `src/takekeeper/schema_preflight.py`.
 
-- `ExtractionRunRecord` now includes:
-  - `media_mime_type: str | None`;
-  - `media_content_sha256: str | None`;
-  - `media_byte_size: int | None`.
-- `_records()` copies those fields only from the trusted `TakeExtractionRequest`; Gemini/model output has no path to populate or alter them.
-- `media_fingerprint` remains explicitly documented as locator+duration identity and is not conflated with byte identity.
+It provides:
 
-### ClickHouse inserts and reads now include media provenance
+- `check_extraction_schema(client, database=...)` for a read-only report;
+- `require_extraction_schema_ready(client, database=...)` for a fail-closed deployment/worker startup gate;
+- `SchemaPreflightReport` with deterministic `ready`, checked tables, missing columns, and incompatible columns;
+- `ClickHouseSchemaNotReady` with an intentionally coarse remediation message.
 
-`ClickHouseExtractionProvenanceStore` now:
+The check performs exactly two parameterized reads against `system.columns`, one for `extraction_runs` and one for `extracted_observations`. Each read is bounded with `max_result_rows=64` and `result_overflow_mode=throw`.
 
-- includes all three trusted fields in `_RUN_COLUMNS`;
-- writes them on new `extraction_runs` inserts;
-- selects and reconstructs them in `_existing_run()`;
-- selects and reconstructs them in tenant/scene/take-scoped `list_runs()`;
-- preserves `None` for historical rows whose migration-added fields are null.
+No production rows, media locators, media hashes, Gemini output, tenant identifiers, or credentials are read. Database names and table names are sent as query parameters rather than interpolated into SQL.
 
-The application column order matches the additive migration/fresh schema contract. Existing historical rows remain readable because the columns are nullable.
+### Migration 002 rollout skew is detected before ingestion
 
-### Immutable retry reconciliation now protects byte identity
+The `extraction_runs` readiness contract explicitly verifies:
 
-`_run_payload()` now includes MIME type, content SHA-256, and byte size. Therefore the existing retry reconciler now rejects a reused `run_id` if any of these trusted immutable values differ from the persisted row.
+- `media_mime_type` as nullable low-cardinality string metadata;
+- `media_content_sha256` as nullable `FixedString(64)`;
+- `media_byte_size` as nullable `UInt64`;
+- the existing locator fingerprint, trusted scope, duration, extractor identity, prompt-schema identity, and timestamp columns.
 
-This closes an important production ambiguity: two objects could share a locator/duration or a mutable object name while containing different bytes. When a trusted ingest boundary supplies a content digest, the run identity now protects that fact during acknowledgement-loss retries, partial persistence recovery, and duplicate submissions.
+The companion `extracted_observations` table is checked in the same gate so a deployment cannot pass run-table readiness but fail on the first observation insert.
 
-The retry error remains intentionally non-sensitive: it states that immutable provenance differs without echoing URIs, hashes, sizes, credentials, or provider payloads.
+Missing/incompatible columns do not echo observed database types, connection strings, database names, media data, hashes, or credentials in the raised readiness exception. The operator receives only a bounded instruction to apply `sql/schema.sql` for a fresh deployment or pending `sql/migrations/*.sql` for an upgrade and rerun the preflight.
 
 ### Regression coverage
 
-Added `tests/test_extraction_media_persistence.py` with an in-process fake ClickHouse client. It covers:
+Added `tests/test_schema_preflight.py` covering:
 
-- trusted MIME/SHA-256/byte size written in the run insert;
-- returned `ExtractionRunRecord` carrying the same fields;
-- an identical same-`run_id` retry reconciling without a second run insert;
-- same `run_id` + changed content SHA-256 failing closed;
-- same `run_id` + changed MIME type failing closed;
-- same `run_id` + changed byte size failing closed;
-- `list_runs()` round-tripping the provenance fields;
-- tenant-scoped run reads returning no data for another production.
+- a current schema passing;
+- exactly two bounded `system.columns` reads;
+- migration-002 provenance columns missing from an older deployment;
+- an incompatible content-hash column type;
+- a missing `extracted_observations` table surfacing as required columns missing;
+- invalid database identifiers rejected before any query;
+- database/table values remaining parameterized rather than interpolated;
+- no command or insert operation being used by the preflight.
 
-The test deliberately uses an extraction result with zero observations so the cases isolate run-level retry/provenance behavior rather than observation reconciliation.
+### Operator/deployment documentation
+
+Added `SCHEMA_READINESS.md` with the recommended startup sequence:
+
+1. create the separately permissioned trusted application ClickHouse client;
+2. run `require_extraction_schema_ready(...)` before accepting ingestion or starting extraction workers;
+3. fail the deployment/readiness transition if the check fails;
+4. apply migrations out of band using appropriately privileged credentials;
+5. restart/recheck with the normal lower-privilege application connection.
+
+The document reiterates that Gemini, the browser UI, and the official ClickHouse MCP server must not receive migration privileges.
 
 ### Repository safety
 
 - No GitHub Actions workflow was added, modified, triggered, or rerun.
 - No unrelated repository was touched.
 - No Gemini/Vertex, ClickHouse, object-storage, or private-media credential was used.
-- No production media was uploaded, downloaded, modified, deleted, or transcoded.
+- No production media was accessed or modified.
 - No destructive ClickHouse operation was introduced.
+- The readiness path is metadata-read-only and does not perform migrations automatically.
 
 ## Validation / results
 
@@ -79,22 +87,24 @@ Files were written directly to `UnknownGod2011/ClickHouse` `main` through the au
 
 Implementation commits this run:
 
-- `1a9d8ab516850192fc791fbcdf89c514f872ce41` — persist trusted media byte provenance and include it in immutable retry reconciliation;
-- `b5def2f32cc8baaaa677f0e71fb61ca89f651fd8` — add credential-free retry/round-trip regression coverage.
+- `40a7b6e5a0f8d8438a9426d54119eb694e2f5620` — add bounded ClickHouse extraction schema preflight;
+- `cfaeea67af45614b57fb59cab97e1ccd4ec5fb0e` — add credential-free schema-preflight regression coverage;
+- `03add05055ef0ecdf367d09742fc1e00371d10d6` — document the production schema readiness gate.
 
-Attempted local validation command path:
+Attempted validation:
 
 ```text
-git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git
+git clone --depth 1 https://github.com/UnknownGod2011/ClickHouse.git /tmp/takekeeper-check
+PYTHONPATH=src python -m unittest tests.test_schema_preflight -v
 ```
 
-Result: the environment failed DNS resolution for `github.com` before checkout (`Could not resolve host: github.com`). Therefore the new Python tests and ClickHouse DDL were structurally reviewed but are **not claimed as passing** in this environment. No GitHub Actions run was used as a workaround.
+Result: clone failed before checkout because DNS resolution for `github.com` failed (`Could not resolve host: github.com`). Therefore the new Python test suite is structurally reviewed but is **not claimed as passing** in this environment. No GitHub Actions run was used as a workaround.
 
-No live Gemini/Vertex request, real ClickHouse request, official MCP session, ffmpeg rendering, or production-media hash was performed.
+No live Gemini/Vertex request, real ClickHouse request, official MCP session, ffmpeg rendering, or production-media operation was performed.
 
 ## Decisions locked
 
-1. Official ClickHouse MCP remains read-only and is never reused for application writes or credential handling.
+1. Official ClickHouse MCP remains read-only and is never reused for application writes, migrations, or credential handling.
 2. Trusted application writes use separately permissioned ClickHouse clients.
 3. Agent-facing MCP access remains bounded; arbitrary agent SQL is not exposed.
 4. Production/scene/take scope is trusted application metadata and never model output.
@@ -111,16 +121,18 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 15. A persisted same-`run_id` retry must match locator fingerprint, trusted MIME metadata, content SHA-256, byte size, duration, scope, extractor identity, and prompt schema before reconciliation can continue.
 16. Benchmark thresholds remain immutable after observing a candidate.
 17. Live-service quality/security claims require real authorized execution and are not inferred from mocks.
+18. Application/schema compatibility must be checked before enabling extraction ingestion; the first production take must never serve as the migration detector.
+19. Schema readiness is metadata-read-only and must not implicitly grant migration privileges to the normal application connection.
 
 ## Gates
 
-- **Gate A — live ClickHouse:** implementation/harness coverage exists; real-endpoint execution remains pending.
+- **Gate A — live ClickHouse:** implementation/harness coverage exists; schema readiness is now implemented structurally; real-endpoint execution remains pending.
 - **Gate B — continuity correctness:** deterministic comparison, persistence, governed projection, and stale-state convergence are implemented.
 - **Gate C — evidence/review:** durable evidence, stable finding identity, append-only review, authenticated API, and operator console are implemented.
 - **Gate D — editorial retrieval:** typed/bounded retrieval and SQL coverage exist; live official MCP execution remains pending.
-- **Gate E — failure honesty:** extraction/persistence/MCP/review paths fail closed structurally; abstentions cannot become false mismatches.
-- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, replacement isolation, and immutable run retry identity are implemented structurally; live RBAC/write-denial proof remains pending.
-- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, byte identity, schema support, and canonical ClickHouse persistence wiring exist; live execution remains pending.
+- **Gate E — failure honesty:** extraction/persistence/MCP/review/schema-readiness paths fail closed structurally; abstentions cannot become false mismatches.
+- **Gate F — security:** tenant scope, parameter binding, read/write separation, authenticated review, trusted extraction scope, replacement isolation, immutable run retry identity, and metadata-only preflight are implemented structurally; live RBAC/write-denial proof remains pending.
+- **Gate G — multimodal evidence:** governed extraction, Gemini transport, objective benchmark metrics, synthetic media, live candidate runner, trusted MIME metadata, byte identity, schema support, canonical ClickHouse persistence, and rollout-skew detection exist; live execution remains pending.
 
 ## Blockers / unknowns
 
@@ -129,25 +141,27 @@ No live Gemini/Vertex request, real ClickHouse request, official MCP session, ff
 3. No Gemini/Vertex credentials or trusted uploaded benchmark media are available.
 4. Official MCP runtime/auth/version behavior and explicit write denial remain unmeasured against a live server.
 5. Live `google-genai` video/schema behavior, latency, token usage, and provider failure modes remain unmeasured.
-6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before this updated persistence adapter writes the new fields.
+6. Existing deployments must apply `sql/migrations/002_extraction_media_provenance.sql` before the updated persistence adapter writes the new fields; the new preflight now detects this rollout skew before ingestion.
 7. Local SHA-256 hashing cannot prove immutability if another writer replaces same-length bytes during the read; production ingest should hash immutable/staged objects or use object generation/version guarantees.
-8. A real ClickHouse validation is still needed to confirm the exact Python driver round-trip representation for nullable `FixedString(64)` under the selected ClickHouse/clickhouse-connect versions, although the adapter follows the existing string conversion pattern.
+8. A real ClickHouse validation is still needed to confirm exact driver type strings and nullable `FixedString(64)` round trips under the selected ClickHouse/clickhouse-connect versions.
+9. The new readiness helper is available for deployment/startup wiring, but there is not yet one canonical production service bootstrap that invokes it automatically before opening the ingest surface.
 
 ## Highest-priority backlog
 
-- Run `tests/test_extraction_media_persistence.py`, `tests/test_extraction_store.py`, and the full credential-free suite in a normal checkout; fix any integration/type issues discovered.
-- Add a safe migration preflight/readiness check so deployments fail with an actionable non-secret error if application code is newer than the ClickHouse schema, instead of discovering missing provenance columns during the first production extraction.
-- Run the migration plus extraction retry/projection replacement against a disposable real ClickHouse instance.
+- Wire `require_extraction_schema_ready(...)` into the canonical production ingest/bootstrap boundary once that service entry point is identified/standardized, and expose only a coarse ready/not-ready operator status.
+- Run `tests/test_schema_preflight.py`, `tests/test_extraction_media_persistence.py`, `tests/test_extraction_store.py`, and the full credential-free suite in a normal checkout; fix any integration/type issues discovered.
+- Run schema preflight, migration 002, extraction retry, and projection replacement against a disposable real ClickHouse instance.
 - Run the deterministic ffmpeg fixture generator and `takekeeper-live-benchmark` against one authorized Gemini/Vertex candidate using self-owned generated media.
 - Start official `ClickHouse/mcp-clickhouse` read-only, exercise continuity/editorial operations, and record explicit write denial.
 
 ## Single best next step
 
-**Add a bounded ClickHouse schema/readiness preflight for the trusted application connection that verifies the required extraction provenance columns (including MIME/SHA-256/byte size) before ingestion starts, with fake-client regression tests and a non-secret actionable migration error. This prevents application/schema rollout skew from turning the first real production extraction into the migration detector.**
+**Create/standardize the production ingestion bootstrap so the trusted ClickHouse client must pass `require_extraction_schema_ready(...)` before the ingest worker/API becomes ready, with a coarse readiness surface and fake-client tests proving an old schema cannot accept a take. This turns the new preflight from a callable guard into an enforced deployment invariant.**
 
 ## Relevant implementation references
 
 - https://clickhouse.com/integrations/python
+- https://clickhouse.com/docs/operations/system-tables/columns
 - https://github.com/ClickHouse/clickhouse-connect
 - https://github.com/ClickHouse/mcp-clickhouse
 - https://googleapis.github.io/python-genai/
