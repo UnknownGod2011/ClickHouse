@@ -69,6 +69,43 @@ def _extraction_result(request: TakeExtractionRequest, *, run_id: str, value: st
     ).extract(request)
 
 
+class _OneShotInsertFailureClient:
+    """Delegating real-client wrapper for acceptance-level interrupted-write tests.
+
+    `failure_mode="before"` raises before the first insert into the selected table.
+    `failure_mode="after"` performs the insert and then raises, simulating an
+    acknowledgement loss after ClickHouse has accepted the mutation.
+    All reads and commands are delegated unchanged to the real client.
+    """
+
+    def __init__(self, client, *, table_suffix: str, failure_mode: str) -> None:
+        if failure_mode not in {"before", "after"}:
+            raise ValueError("failure_mode must be 'before' or 'after'")
+        self._client = client
+        self._table_suffix = table_suffix
+        self._failure_mode = failure_mode
+        self._failed = False
+
+    def query(self, *args, **kwargs):
+        return self._client.query(*args, **kwargs)
+
+    def command(self, *args, **kwargs):
+        return self._client.command(*args, **kwargs)
+
+    def insert(self, table, data, *args, **kwargs):
+        should_fail = not self._failed and str(table).endswith(self._table_suffix)
+        if should_fail and self._failure_mode == "before":
+            self._failed = True
+            raise TimeoutError("injected failure before ClickHouse observation persistence")
+
+        result = self._client.insert(table, data, *args, **kwargs)
+
+        if should_fail and self._failure_mode == "after":
+            self._failed = True
+            raise TimeoutError("injected acknowledgement loss after ClickHouse persistence")
+        return result
+
+
 @unittest.skipUnless(
     _env_bool("TAKEKEEPER_CLICKHOUSE_INTEGRATION"),
     "set TAKEKEEPER_CLICKHOUSE_INTEGRATION=1 to run against a real ClickHouse instance",
@@ -139,6 +176,19 @@ class RealClickHouseIntegrationTests(unittest.TestCase):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    def _extraction_counts(self, *, run_id: str) -> tuple[int, int]:
+        run_count = int(self.client.query(
+            f"SELECT count() FROM {self.database}.extraction_runs "
+            "WHERE production_id = {production_id:String} AND run_id = {run_id:String}",
+            parameters={"production_id": PRODUCTION_ID, "run_id": run_id},
+        ).result_set[0][0])
+        observation_count = int(self.client.query(
+            f"SELECT count() FROM {self.database}.extracted_observations "
+            "WHERE production_id = {production_id:String} AND run_id = {run_id:String}",
+            parameters={"production_id": PRODUCTION_ID, "run_id": run_id},
+        ).result_set[0][0])
+        return run_count, observation_count
 
     def test_seed_contract_and_editorial_retrieval(self) -> None:
         baselines = self.memory.list_baselines(production_id=PRODUCTION_ID, scene_id=SCENE_ID)
@@ -304,6 +354,47 @@ class RealClickHouseIntegrationTests(unittest.TestCase):
             run_id="integration-run-1",
         )
         self.assertEqual([], wrong_tenant)
+
+    def test_extraction_retry_repairs_failure_before_observation_persistence(self) -> None:
+        request = _extraction_request(media_uri="fixture://s28-t47?retry=before")
+        result = _extraction_result(request, run_id="integration-retry-before", value="left")
+        failing_client = _OneShotInsertFailureClient(
+            self.client,
+            table_suffix=".extracted_observations",
+            failure_mode="before",
+        )
+        store = ClickHouseExtractionProvenanceStore(failing_client, database=self.database)
+
+        with self.assertRaisesRegex(TimeoutError, "before ClickHouse observation persistence"):
+            store.append(request, result)
+        self.assertEqual((1, 0), self._extraction_counts(run_id=result.run_id))
+
+        repaired = store.append(request, result)
+        self.assertEqual(result.run_id, repaired.run_id)
+        self.assertEqual((1, 1), self._extraction_counts(run_id=result.run_id))
+        history = store.list_observations(production_id=PRODUCTION_ID, run_id=result.run_id)
+        self.assertEqual(["left"], [row.normalized_value for row in history])
+
+    def test_extraction_retry_converges_after_acknowledgement_loss(self) -> None:
+        request = _extraction_request(media_uri="fixture://s28-t47?retry=ack-loss")
+        result = _extraction_result(request, run_id="integration-retry-ack-loss", value="right")
+        failing_client = _OneShotInsertFailureClient(
+            self.client,
+            table_suffix=".extracted_observations",
+            failure_mode="after",
+        )
+        store = ClickHouseExtractionProvenanceStore(failing_client, database=self.database)
+
+        with self.assertRaisesRegex(TimeoutError, "acknowledgement loss"):
+            store.append(request, result)
+        self.assertEqual((1, 1), self._extraction_counts(run_id=result.run_id))
+
+        repaired = store.append(request, result)
+        self.assertEqual(result.run_id, repaired.run_id)
+        self.assertEqual((1, 1), self._extraction_counts(run_id=result.run_id))
+        history = store.list_observations(production_id=PRODUCTION_ID, run_id=result.run_id)
+        self.assertEqual(1, len(history))
+        self.assertEqual("right", history[0].normalized_value)
 
     def test_reanalysis_removes_stale_findings(self) -> None:
         corrected = [
