@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import mimetypes
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib.parse import urlparse
 
 from .extraction import ExtractionPrompt
+from .media_provenance import MediaProvenanceError, resolve_video_mime_type
 
 
 class GoogleGenAITransportError(RuntimeError):
@@ -55,31 +54,19 @@ def _default_part_factory(uri: str, mime_type: str) -> Any:
     return types.Part.from_uri(file_uri=uri, mime_type=mime_type)
 
 
-def _supported_video_mime(uri: str) -> str:
-    parsed = urlparse(uri)
-    if parsed.scheme not in {"https", "gs"}:
-        raise GoogleGenAITransportError("media URI must use https:// or gs://")
-    if parsed.scheme == "https" and not parsed.netloc:
-        raise GoogleGenAITransportError("https media URI must include a host")
-    if parsed.scheme == "gs" and (not parsed.netloc or not parsed.path.strip("/")):
-        raise GoogleGenAITransportError("gs media URI must include a bucket and object")
-    if parsed.username or parsed.password:
-        raise GoogleGenAITransportError("media URI must not contain embedded credentials")
+def _supported_video_mime(uri: str, explicit_mime_type: str | None = None) -> str:
+    """Resolve trusted video MIME metadata through the shared provenance boundary.
 
-    mime_type, _ = mimetypes.guess_type(parsed.path)
-    supported = {
-        "video/mp4",
-        "video/mpeg",
-        "video/quicktime",
-        "video/x-msvideo",
-        "video/x-flv",
-        "video/webm",
-        "video/x-ms-wmv",
-        "video/3gpp",
-    }
-    if mime_type not in supported:
-        raise GoogleGenAITransportError("media URI must identify a supported video type")
-    return mime_type
+    Keeping URI validation and MIME allow-listing in one module prevents the Gemini path
+    from drifting away from ingest provenance rules. Explicit MIME metadata is trusted
+    application input and enables extensionless signed/object URLs. Suffix conflicts fail
+    closed.
+    """
+
+    try:
+        return resolve_video_mime_type(uri, explicit_mime_type)
+    except MediaProvenanceError as exc:
+        raise GoogleGenAITransportError(str(exc)) from exc
 
 
 def _google_json_schema(value: Any) -> Any:
@@ -126,7 +113,7 @@ class GoogleGenAIExtractionTransport:
         return self._config.model
 
     def __call__(self, prompt: ExtractionPrompt) -> str:
-        mime_type = _supported_video_mime(prompt.media_uri)
+        mime_type = _supported_video_mime(prompt.media_uri, prompt.media_mime_type)
         media_part = self._part_factory(prompt.media_uri, mime_type)
         provider_schema = _google_json_schema(prompt.response_schema)
         config: dict[str, Any] = {
