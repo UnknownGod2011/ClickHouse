@@ -54,13 +54,10 @@ class ClickHouseProductionMemory:
     def _table(self, name: str) -> str:
         return f"{self._database}.{name}"
 
-    def upsert_observations(self, observations: Iterable[Observation]) -> None:
-        rows = list(observations)
+    def _insert_observations(self, rows: list[Observation]) -> None:
         if not rows:
             return
         now = datetime.now(timezone.utc)
-        for observation in rows:
-            self._delete_observation_key(observation)
         self._client.insert(
             self._table("observations"),
             [
@@ -91,6 +88,36 @@ class ClickHouseProductionMemory:
                 "source_type", "verification_state", "model_version", "created_at",
             ],
         )
+
+    def upsert_observations(self, observations: Iterable[Observation]) -> None:
+        rows = list(observations)
+        if not rows:
+            return
+        for observation in rows:
+            self._delete_observation_key(observation)
+        self._insert_observations(rows)
+
+    def replace_observations(
+        self,
+        *,
+        production_id: str,
+        scene_id: str,
+        take_id: str,
+        observations: Iterable[Observation],
+    ) -> None:
+        rows = list(observations)
+        scope = (production_id, scene_id, take_id)
+        for observation in rows:
+            if (observation.production_id, observation.scene_id, observation.take_id) != scope:
+                raise ValueError("observation scope does not match replacement scope")
+        self._client.command(
+            f"DELETE FROM {self._table('observations')} WHERE "
+            "production_id = {production_id:String} AND scene_id = {scene_id:String} "
+            "AND take_id = {take_id:String}",
+            parameters={"production_id": production_id, "scene_id": scene_id, "take_id": take_id},
+            settings={"mutations_sync": 1},
+        )
+        self._insert_observations(rows)
 
     def _delete_observation_key(self, observation: Observation) -> None:
         self._client.command(
