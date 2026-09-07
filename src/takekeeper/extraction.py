@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from .media_provenance import MediaProvenanceError, SUPPORTED_VIDEO_MIME_TYPES
 from .models import Observation
 
 SourceType = Literal["vision", "transcript", "metadata"]
@@ -69,6 +70,9 @@ class TakeExtractionRequest:
     extractor_model: str
     extractor_version: str
     prompt_schema_version: str = "takekeeper-extraction-v1"
+    media_mime_type: str | None = None
+    media_content_sha256: str | None = None
+    media_byte_size: int | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("production_id", "scene_id", "take_id", "media_uri", "extractor_model", "extractor_version"):
@@ -81,6 +85,18 @@ class TakeExtractionRequest:
         identities = [(item.entity_id, item.property_key) for item in self.properties]
         if len(set(identities)) != len(identities):
             raise ValueError("configured properties must be unique")
+        if self.media_mime_type is not None:
+            if not isinstance(self.media_mime_type, str) or self.media_mime_type.strip().lower() not in SUPPORTED_VIDEO_MIME_TYPES:
+                raise ValueError("media_mime_type must be a supported video MIME type when provided")
+        if self.media_content_sha256 is not None:
+            value = self.media_content_sha256
+            if not isinstance(value, str) or len(value) != 64 or value != value.lower() or any(ch not in "0123456789abcdef" for ch in value):
+                raise ValueError("media_content_sha256 must be a lowercase SHA-256 hex digest")
+        if self.media_byte_size is not None:
+            if type(self.media_byte_size) is not int or self.media_byte_size <= 0:
+                raise ValueError("media_byte_size must be a positive integer when provided")
+            if self.media_content_sha256 is None:
+                raise ValueError("media_byte_size requires media_content_sha256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +104,9 @@ class ExtractionPrompt:
     text: str
     response_schema: Mapping[str, Any]
     media_uri: str
+    media_mime_type: str | None = None
+    media_content_sha256: str | None = None
+    media_byte_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,17 +151,9 @@ def _response_schema(specs: Sequence[PropertySpec]) -> dict[str, Any]:
                     "type": "object",
                     "additionalProperties": False,
                     "required": [
-                        "entity_id",
-                        "property_key",
-                        "normalized_value",
-                        "raw_model_value",
-                        "evidence_start_ms",
-                        "evidence_end_ms",
-                        "confidence",
-                        "source_type",
-                        "evidence_rationale_short",
-                        "visibility_state",
-                        "temporal_support",
+                        "entity_id", "property_key", "normalized_value", "raw_model_value",
+                        "evidence_start_ms", "evidence_end_ms", "confidence", "source_type",
+                        "evidence_rationale_short", "visibility_state", "temporal_support",
                     ],
                     "properties": {
                         "entity_id": {"type": "string"},
@@ -176,7 +187,14 @@ def build_extraction_prompt(request: TakeExtractionRequest) -> ExtractionPrompt:
         "Do not invent production, scene, take, entity, or property identifiers.\nConfigured properties:\n"
         + "\n".join(registry_lines)
     )
-    return ExtractionPrompt(text=text, response_schema=_response_schema(request.properties), media_uri=request.media_uri)
+    return ExtractionPrompt(
+        text=text,
+        response_schema=_response_schema(request.properties),
+        media_uri=request.media_uri,
+        media_mime_type=request.media_mime_type.strip().lower() if request.media_mime_type is not None else None,
+        media_content_sha256=request.media_content_sha256,
+        media_byte_size=request.media_byte_size,
+    )
 
 
 class GovernedMultimodalExtractor:
@@ -234,17 +252,9 @@ class GovernedMultimodalExtractor:
         seen: set[tuple[str, str]] = set()
         results: list[ExtractedObservation] = []
         required = {
-            "entity_id",
-            "property_key",
-            "normalized_value",
-            "raw_model_value",
-            "evidence_start_ms",
-            "evidence_end_ms",
-            "confidence",
-            "source_type",
-            "evidence_rationale_short",
-            "visibility_state",
-            "temporal_support",
+            "entity_id", "property_key", "normalized_value", "raw_model_value",
+            "evidence_start_ms", "evidence_end_ms", "confidence", "source_type",
+            "evidence_rationale_short", "visibility_state", "temporal_support",
         }
         for index, row in enumerate(payload["observations"]):
             if not isinstance(row, Mapping) or set(row) != required:
