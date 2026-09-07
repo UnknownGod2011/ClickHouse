@@ -5,6 +5,7 @@ from dataclasses import asdict
 from typing import Mapping, Sequence
 
 from .extraction import HERO_PROPERTY_REGISTRY, PropertySpec, TakeExtractionRequest
+from .ingest_admission import ActorIngestAdmissionGuard, IngestOverloaded
 from .ingest_runtime import IngestNotReady, SchemaGatedIngestService
 from .review_api import ReviewerIdentityProvider
 
@@ -30,8 +31,9 @@ class IngestHttpApp:
 
     Liveness is process-local and intentionally independent of ClickHouse. Readiness is the
     coarse state exported by :class:`SchemaGatedIngestService`. Ingestion is authenticated,
-    accepts only bounded trusted take metadata, and never lets callers choose model identity,
-    prompt schema, or arbitrary property/value registries.
+    admission-controlled by verified actor identity, accepts only bounded trusted take metadata,
+    and never lets callers choose model identity, prompt schema, or arbitrary property/value
+    registries.
     """
 
     def __init__(
@@ -44,9 +46,11 @@ class IngestHttpApp:
         extractor_version: str,
         prompt_schema_version: str = "takekeeper-extraction-v1",
         credential_environ_key: str = "HTTP_AUTHORIZATION",
+        admission_guard: ActorIngestAdmissionGuard | None = None,
     ) -> None:
         self._service = service
         self._identity = identity
+        self._admission = admission_guard or ActorIngestAdmissionGuard()
         configured = property_profiles or {"hero": HERO_PROPERTY_REGISTRY}
         if not configured:
             raise ValueError("at least one property profile is required")
@@ -76,6 +80,8 @@ class IngestHttpApp:
             status, payload = self._dispatch(environ)
         except PermissionError:
             status, payload = 401, {"error": "authentication required"}
+        except IngestOverloaded:
+            status, payload = 429, {"error": "ingestion overloaded"}
         except IngestNotReady:
             status, payload = 503, {"error": "ingestion not ready"}
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
@@ -112,6 +118,11 @@ class IngestHttpApp:
                 "schema_checked": readiness.schema_checked,
             }
 
+        if path == "/metrics":
+            if method != "GET":
+                return 405, {"error": "method not allowed"}
+            return 200, {"ingest_admission": asdict(self._admission.snapshot())}
+
         if path != "/v1/ingest":
             return 404, {"error": "not found"}
         if method != "POST":
@@ -119,10 +130,13 @@ class IngestHttpApp:
 
         # Authenticate before reading attacker-controlled request bytes. Deployments may source
         # credentials from Authorization or a verified reverse-proxy assertion header such as IAP.
-        self._identity.authenticate(environ.get(self._credential_environ_key))
-        payload = _read_json_body(environ)
-        request = self._request_from_payload(payload)
-        ingested = self._service.ingest(request)
+        # The admission key is only the trusted actor returned by that verifier; tenant/media IDs
+        # are deliberately unavailable to the limiter at this point.
+        actor_id = self._identity.authenticate(environ.get(self._credential_environ_key))
+        with self._admission.acquire(actor_id):
+            payload = _read_json_body(environ)
+            request = self._request_from_payload(payload)
+            ingested = self._service.ingest(request)
         return 201, {
             "run_id": ingested.result.run_id,
             "production_id": ingested.result.production_id,
@@ -209,6 +223,7 @@ def _status_text(status: int) -> str:
         401: "Unauthorized",
         404: "Not Found",
         405: "Method Not Allowed",
+        429: "Too Many Requests",
         500: "Internal Server Error",
         503: "Service Unavailable",
     }[status]
