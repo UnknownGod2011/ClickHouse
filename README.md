@@ -2,7 +2,7 @@
 
 **Production memory and continuity intelligence for film, television, and creator teams.**
 
-TakeKeeper turns recorded takes into structured, evidence-backed production memory. A governed Gemini/Google Gen AI extraction adapter can analyze trusted media, ClickHouse stores durable observations and review history, deterministic continuity logic detects mismatches, and the official `ClickHouse/mcp-clickhouse` server is the bounded read-side bridge for production/editorial agents.
+TakeKeeper turns recorded takes into structured, evidence-backed production memory. A governed Gemini/Google Gen AI extraction adapter analyzes trusted media, ClickHouse stores durable observations and review history, deterministic continuity logic detects mismatches, and the official `ClickHouse/mcp-clickhouse` server is the bounded read-side bridge for production/editorial agents.
 
 This repository is a personal open-source project.
 
@@ -13,7 +13,11 @@ This repository is a personal open-source project.
 - Replacement-based current machine state: later abstaining re-analysis clears stale projected observations for the exact take while append-only extraction provenance is retained.
 - Governed multimodal extraction with configured entity/property registries, bounded evidence windows, confidence/disposition policy, local response validation, and fail-closed extraction-to-continuity projection.
 - Optional Google Gen AI / Vertex AI video transport behind the same extraction boundary; missing provider credentials do not break the deterministic core.
+- Trusted media provenance with locator fingerprints plus optional MIME type, content SHA-256, and byte size; same-run retry reconciliation treats trusted byte identity as immutable.
 - Retry-safe extraction persistence and disposable real-ClickHouse acceptance harnesses for persistence/reconciliation and scoped replacement semantics.
+- Bounded ClickHouse extraction-schema preflight plus a schema-gated ingest service that starts closed and revokes readiness before every recheck.
+- Dependency-free authenticated WSGI ingestion with separate `/healthz` and `/readyz`, bounded request parsing, and server-owned extraction policy.
+- Environment-driven production composition for ClickHouse + Gemini/Vertex + provenance + auth that cannot return a ready app until schema preflight succeeds.
 - Hard-constrained ClickHouse analytical query builders plus a bounded `McpEvidenceReader` for the official MCP `run_query` tool. Arbitrary model-authored SQL is not exposed.
 - Stable deterministic finding IDs, append-only human review history, authenticated review API, and a dependency-free same-origin operator console.
 - A credential-free multimodal benchmark that measures normalized-value accuracy, temporal evidence IoU, extraction disposition, projection eligibility, final continuity status, and unsupported assertions independently.
@@ -27,6 +31,11 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 
 - `src/takekeeper/extraction.py` — governed extraction contract and local validation.
 - `src/takekeeper/google_genai_transport.py` — optional Google Gen AI / Vertex AI multimodal transport.
+- `src/takekeeper/extraction_store.py` — append-only extraction provenance and retry reconciliation.
+- `src/takekeeper/schema_preflight.py` — bounded metadata-only ClickHouse extraction-schema readiness check.
+- `src/takekeeper/ingest_runtime.py` — fail-closed schema-gated trusted ingestion service.
+- `src/takekeeper/ingest_api.py` — authenticated bounded WSGI ingress and health/readiness endpoints.
+- `src/takekeeper/production_ingest.py` — secret-safe environment composition for production ingest.
 - `src/takekeeper/extraction_projection.py` — strict evidence-to-current-continuity projection boundary.
 - `src/takekeeper/multimodal_benchmark.py` — independent benchmark metrics.
 - `src/takekeeper/benchmark_cli.py` — stable JSON deterministic benchmark runner and release gate.
@@ -34,7 +43,6 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 - `src/takekeeper/fixture_media.py` — local deterministic synthetic-video renderer and content-provenance manifest.
 - `src/takekeeper/continuity.py` — deterministic continuity comparison.
 - `src/takekeeper/memory.py` / `clickhouse_memory.py` — memory protocol and ClickHouse persistence.
-- `src/takekeeper/extraction_store.py` — extraction provenance/reconciliation persistence.
 - `src/takekeeper/mcp_reader.py` — bounded read-only official-MCP adapter.
 - `src/takekeeper/review.py`, `review_api.py`, `review_console.py` — human review boundary and UI.
 - `src/takekeeper/service.py` — scoped ingest/analyze/persist orchestration.
@@ -45,6 +53,8 @@ Live ClickHouse, official MCP, and Gemini/Vertex behavior is only considered pro
 - `FIXTURE_MEDIA.md` — generated-video workflow and content-digest provenance contract.
 - `LIVE_BENCHMARK.md` — external media map, Gemini/Vertex live evaluation, and provenance/security contract.
 - `GEMINI_INTEGRATION.md` — provider setup and transport trust boundary.
+- `INGEST_API.md` — authenticated HTTP ingest contract.
+- `PRODUCTION_INGEST.md` — environment variables, startup order, privilege separation, and WSGI deployment.
 - `progress.md` — exact implementation handoff and next step.
 
 ## Run the credential-free suite
@@ -122,7 +132,7 @@ Install the official client extra:
 pip install -e '.[clickhouse]'
 ```
 
-Construct the official client outside the domain layer and inject it into TakeKeeper:
+Construct the official client outside the domain layer and inject it into TakeKeeper when using lower-level APIs:
 
 ```python
 import clickhouse_connect
@@ -150,7 +160,21 @@ CLICKHOUSE_PASSWORD='' \
 PYTHONPATH=src python -m unittest tests.test_clickhouse_integration -v
 ```
 
-For ClickHouse Cloud, use the service endpoint/credentials supplied by ClickHouse and set secure transport as documented by the client.
+For ClickHouse Cloud, use the service endpoint/credentials supplied by ClickHouse and secure transport as documented by ClickHouse Connect.
+
+## Production ingest service
+
+Install both provider extras:
+
+```bash
+pip install -e '.[clickhouse,gemini]'
+```
+
+`build_ingest_deployment_from_env()` constructs the trusted ClickHouse client, Gemini/Vertex transport, provenance store, bearer identity adapter, `SchemaGatedIngestService`, and `IngestHttpApp`. The service performs extraction-schema preflight before the factory returns; an old or unreachable schema therefore cannot produce HTTP 200 readiness.
+
+The factory takes secrets only from environment configuration. ClickHouse passwords, Gemini API keys, and ingest bearer tokens are excluded from config `repr()`, and startup failures suppress provider exception context at this boundary. Vertex mode uses project/location plus Application Default Credentials; Developer API mode uses a server-side API key. See `PRODUCTION_INGEST.md` for the complete variable contract and WSGI example.
+
+Production-specific property mappings remain server-owned. Embedders may inject a trusted mapping of profile names to `PropertySpec` sequences when composing the deployment; ingest requests can only select one of those registered names.
 
 ## ClickHouse MCP boundary
 
@@ -190,6 +214,8 @@ The deterministic `glass-house` Scene 28 fixture contains continuity and editori
 - Extraction history is append-only; current machine projection is scoped replacement state.
 - Missing/abstaining evidence cannot become a false continuity mismatch.
 - Trusted writes and agent-facing MCP reads use separate credentials and capabilities.
+- Production ingest remains closed until the trusted ClickHouse extraction schema passes readiness preflight.
+- Network callers cannot supply model identity, prompt schema, arbitrary properties, arbitrary SQL, or migration operations.
 - Dynamic database identifiers are validated; values are parameter-bound.
 - Generated benchmark media is local-only by default and has no automatic upload path.
 - Live benchmark URI maps are operator-owned external inputs and signed/private URI values are not copied into reports.
@@ -197,11 +223,11 @@ The deterministic `glass-house` Scene 28 fixture contains continuity and editori
 
 ## Next production gates
 
-1. Run the full credential-free suite plus actual fixture-media rendering in a normal checkout and fix any concrete failures.
-2. Upload only the generated self-owned clips to a trusted private media location, execute one live Gemini/Vertex candidate with `takekeeper-live-benchmark`, and archive both benchmark JSON and generated-media digests.
-3. Execute the disposable ClickHouse integration suites against a real authorized instance.
+1. Run the full credential-free suite, especially `test_production_ingest`, `test_ingest_api`, `test_ingest_runtime`, `test_schema_preflight`, and extraction persistence/retry coverage, in a runnable checkout and fix concrete failures.
+2. Run production composition against a disposable authorized ClickHouse instance and verify `/readyz` remains 503 before migration 002/current schema and becomes 200 only after schema compatibility is established.
+3. Upload only generated self-owned clips to trusted private storage, execute one live Gemini/Vertex candidate, and archive benchmark JSON plus generated-media digests.
 4. Start official `ClickHouse/mcp-clickhouse` read-only and record actual auth/transport/version behavior, query latency, result shape, and explicit write denial.
-5. Add optional ingest-time content hashing and trusted MIME metadata for production media so provenance can move beyond URI + duration fingerprints.
+5. Add workload-identity/IAP/OIDC authentication as a production alternative to static bearer auth while preserving the narrow `ReviewerIdentityProvider` protocol and current constant-time local/self-hosted path.
 
 ## References
 
