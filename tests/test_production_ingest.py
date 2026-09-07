@@ -48,6 +48,15 @@ class ProductionIngestCompositionTests(unittest.TestCase):
             "TAKEKEEPER_INGEST_ACTOR_ID": "production-ingest",
         }
 
+    def _google_identity_env(self, mode: str, audience: str):
+        env = self.vertex_env()
+        env["TAKEKEEPER_INGEST_IDENTITY_MODE"] = mode
+        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = audience
+        env["TAKEKEEPER_INGEST_SUBJECT_MAP"] = '{"verified-subject":"production-ingest"}'
+        env.pop("TAKEKEEPER_INGEST_BEARER_TOKEN")
+        env.pop("TAKEKEEPER_INGEST_ACTOR_ID")
+        return env
+
     def test_vertex_composition_opens_only_after_schema_preflight(self):
         env = self.vertex_env()
         client = _SchemaClient()
@@ -80,49 +89,41 @@ class ProductionIngestCompositionTests(unittest.TestCase):
         self.assertEqual(deployment.app._credential_environ_key, "HTTP_AUTHORIZATION")
 
     def test_iap_mode_uses_only_signed_iap_assertion_header(self):
-        env = self.vertex_env()
-        env["TAKEKEEPER_INGEST_IDENTITY_MODE"] = "iap"
-        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "/projects/123/global/backendServices/456"
-        env.pop("TAKEKEEPER_INGEST_BEARER_TOKEN")
-        env.pop("TAKEKEEPER_INGEST_ACTOR_ID")
-
+        env = self._google_identity_env(
+            "iap",
+            "/projects/123/global/backendServices/456",
+        )
         deployment = build_ingest_deployment_from_env(
             env,
             clickhouse_client_factory=lambda **_: _SchemaClient(),
             genai_client_factory=lambda **_: SimpleNamespace(models=object()),
         )
-
         self.assertEqual(
             deployment.app._credential_environ_key,
             "HTTP_X_GOOG_IAP_JWT_ASSERTION",
         )
 
     def test_google_oidc_mode_keeps_authorization_header(self):
-        env = self.vertex_env()
-        env["TAKEKEEPER_INGEST_IDENTITY_MODE"] = "google_oidc"
-        env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "https://takekeeper.example.run.app"
-        env.pop("TAKEKEEPER_INGEST_BEARER_TOKEN")
-        env.pop("TAKEKEEPER_INGEST_ACTOR_ID")
-
+        env = self._google_identity_env(
+            "google_oidc",
+            "https://takekeeper.example.run.app",
+        )
         deployment = build_ingest_deployment_from_env(
             env,
             clickhouse_client_factory=lambda **_: _SchemaClient(),
             genai_client_factory=lambda **_: SimpleNamespace(models=object()),
         )
-
         self.assertEqual(deployment.app._credential_environ_key, "HTTP_AUTHORIZATION")
 
     def test_schema_drift_fails_startup_closed(self):
         env = self.vertex_env()
         client = _SchemaClient(ready=False)
-
         with self.assertRaises(ProductionIngestStartupError) as caught:
             build_ingest_deployment_from_env(
                 env,
                 clickhouse_client_factory=lambda **_: client,
                 genai_client_factory=lambda **_: SimpleNamespace(models=object()),
             )
-
         self.assertEqual(
             str(caught.exception),
             "TakeKeeper production ingestion could not start safely.",
@@ -132,14 +133,12 @@ class ProductionIngestCompositionTests(unittest.TestCase):
         env = self.vertex_env()
         del env["TAKEKEEPER_CLICKHOUSE_PASSWORD"]
         called = []
-
         with self.assertRaises(ProductionIngestConfigurationError) as caught:
             build_ingest_deployment_from_env(
                 env,
                 clickhouse_client_factory=lambda **_: called.append("clickhouse"),
                 genai_client_factory=lambda **_: called.append("genai"),
             )
-
         self.assertEqual(called, [])
         self.assertIn("TAKEKEEPER_CLICKHOUSE_PASSWORD", str(caught.exception))
 
@@ -150,7 +149,6 @@ class ProductionIngestCompositionTests(unittest.TestCase):
         env.pop("TAKEKEEPER_GOOGLE_CLOUD_PROJECT")
         env.pop("TAKEKEEPER_GOOGLE_CLOUD_LOCATION")
         config = ProductionIngestConfig.from_environ(env)
-
         rendered = repr(config)
         self.assertNotIn("clickhouse-password-secret", rendered)
         self.assertNotIn("gemini-api-key-secret", rendered)
@@ -170,24 +168,20 @@ class ProductionIngestCompositionTests(unittest.TestCase):
                 clickhouse_client_factory=broken_factory,
                 genai_client_factory=lambda **_: SimpleNamespace(models=object()),
             )
-
         self.assertNotIn(leaked, str(caught.exception))
 
     def test_developer_mode_cannot_mix_vertex_configuration(self):
         env = self.vertex_env()
         env["TAKEKEEPER_GEMINI_MODE"] = "developer"
         env["TAKEKEEPER_GEMINI_API_KEY"] = "developer-key"
-
         with self.assertRaises(ProductionIngestConfigurationError):
             ProductionIngestConfig.from_environ(env)
 
     def test_short_bearer_token_is_rejected_without_echo(self):
         env = self.vertex_env()
         env["TAKEKEEPER_INGEST_BEARER_TOKEN"] = "too-short-secret"
-
         with self.assertRaises(ProductionIngestConfigurationError) as caught:
             ProductionIngestConfig.from_environ(env)
-
         self.assertNotIn("too-short-secret", str(caught.exception))
         self.assertIn("TAKEKEEPER_INGEST_BEARER_TOKEN", str(caught.exception))
 
@@ -200,6 +194,7 @@ class ProductionIngestCompositionTests(unittest.TestCase):
         self.assertIn("TAKEKEEPER_INGEST_EXPECTED_AUDIENCE", str(missing.exception))
 
         env["TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"] = "https://takekeeper.example.run.app"
+        env["TAKEKEEPER_INGEST_SUBJECT_MAP"] = '{"verified-subject":"production-ingest"}'
         with self.assertRaises(ProductionIngestConfigurationError) as mixed:
             ProductionIngestConfig.from_environ(env)
         self.assertIn("TAKEKEEPER_INGEST_BEARER_TOKEN", str(mixed.exception))
