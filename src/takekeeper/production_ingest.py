@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
@@ -19,13 +20,12 @@ from .review_api import ReviewerIdentityProvider, StaticBearerIdentityProvider
 ClickHouseClientFactory = Callable[..., Any]
 GenAIClientFactory = Callable[..., Any]
 IdentityProviderFactory = Callable[["ProductionIngestConfig"], tuple[ReviewerIdentityProvider, str]]
+MAX_SUBJECT_MAP_BYTES = 16_384
+MAX_SUBJECT_MAP_ENTRIES = 256
 
 
 class ProductionIngestConfigurationError(RuntimeError):
-    """Production ingest configuration is absent or structurally invalid.
-
-    Messages identify only configuration field names. Secret values are never included.
-    """
+    """Production ingest configuration is absent or structurally invalid."""
 
 
 class ProductionIngestStartupError(RuntimeError):
@@ -51,6 +51,7 @@ class ProductionIngestConfig:
     ingest_bearer_token: str | None = field(default=None, repr=False)
     ingest_actor_id: str = "ingest-api"
     ingest_expected_audience: str | None = None
+    ingest_subject_map: Mapping[str, str] | None = field(default=None, repr=False)
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] | None = None) -> "ProductionIngestConfig":
@@ -100,14 +101,20 @@ class ProductionIngestConfig:
         bearer: str | None = None
         actor = _optional(env, "TAKEKEEPER_INGEST_ACTOR_ID", "ingest-api", max_length=128)
         audience: str | None = None
+        subject_map: Mapping[str, str] | None = None
         if identity_mode == "static":
             bearer = _required_secret(env, "TAKEKEEPER_INGEST_BEARER_TOKEN", minimum_length=32)
             if env.get("TAKEKEEPER_INGEST_EXPECTED_AUDIENCE"):
                 raise ProductionIngestConfigurationError(
                     "TAKEKEEPER_INGEST_EXPECTED_AUDIENCE must not be set in static identity mode"
                 )
+            if env.get("TAKEKEEPER_INGEST_SUBJECT_MAP"):
+                raise ProductionIngestConfigurationError(
+                    "TAKEKEEPER_INGEST_SUBJECT_MAP must not be set in static identity mode"
+                )
         else:
             audience = _required(env, "TAKEKEEPER_INGEST_EXPECTED_AUDIENCE", max_length=2_048)
+            subject_map = _subject_map(env, "TAKEKEEPER_INGEST_SUBJECT_MAP")
             if env.get("TAKEKEEPER_INGEST_BEARER_TOKEN"):
                 raise ProductionIngestConfigurationError(
                     "TAKEKEEPER_INGEST_BEARER_TOKEN must not be set in Google identity mode"
@@ -135,6 +142,7 @@ class ProductionIngestConfig:
             ingest_bearer_token=bearer,
             ingest_actor_id=actor,
             ingest_expected_audience=audience,
+            ingest_subject_map=subject_map,
         )
 
 
@@ -147,7 +155,7 @@ class ProductionIngestDeployment:
 def _default_clickhouse_client_factory(**kwargs: Any) -> Any:
     try:
         import clickhouse_connect
-    except ImportError as exc:  # pragma: no cover - depends on optional installation
+    except ImportError as exc:  # pragma: no cover
         raise ProductionIngestStartupError(
             "clickhouse-connect is required for production ingestion; install the 'clickhouse' extra"
         ) from exc
@@ -166,10 +174,24 @@ def _default_identity_provider_factory(
         )
     if config.ingest_expected_audience is None:
         raise ProductionIngestConfigurationError("missing TAKEKEEPER_INGEST_EXPECTED_AUDIENCE")
+    if not config.ingest_subject_map:
+        raise ProductionIngestConfigurationError("missing TAKEKEEPER_INGEST_SUBJECT_MAP")
     if config.ingest_identity_mode == "google_oidc":
-        return GoogleOidcIdentityProvider(config.ingest_expected_audience), "HTTP_AUTHORIZATION"
+        return (
+            GoogleOidcIdentityProvider(
+                config.ingest_expected_audience,
+                authorized_subjects=config.ingest_subject_map,
+            ),
+            "HTTP_AUTHORIZATION",
+        )
     if config.ingest_identity_mode == "iap":
-        return IapIdentityProvider(config.ingest_expected_audience), "HTTP_X_GOOG_IAP_JWT_ASSERTION"
+        return (
+            IapIdentityProvider(
+                config.ingest_expected_audience,
+                authorized_subjects=config.ingest_subject_map,
+            ),
+            "HTTP_X_GOOG_IAP_JWT_ASSERTION",
+        )
     raise ProductionIngestConfigurationError("invalid TAKEKEEPER_INGEST_IDENTITY_MODE")
 
 
@@ -181,13 +203,7 @@ def build_ingest_deployment_from_env(
     identity_provider_factory: IdentityProviderFactory | None = None,
     property_profiles: Mapping[str, Sequence[PropertySpec]] | None = None,
 ) -> ProductionIngestDeployment:
-    """Compose and open the trusted production ingestion stack from environment config.
-
-    No secret is accepted through argv. The returned app cannot report ready until the same
-    trusted ClickHouse client used for provenance persistence has passed schema preflight.
-    Factories and server-owned profiles are injectable so composition can be tested or
-    customized without giving HTTP callers authority to define extraction policy.
-    """
+    """Compose and open the trusted production ingestion stack from environment config."""
 
     config = ProductionIngestConfig.from_environ(environ)
     clickhouse_factory = clickhouse_client_factory or _default_clickhouse_client_factory
@@ -235,31 +251,49 @@ def build_ingest_deployment_from_env(
             prompt_schema_version=config.prompt_schema_version,
             credential_environ_key=credential_environ_key,
         )
-        # This is deliberately last. Construction alone can never make /readyz return 200.
         service.start()
         return ProductionIngestDeployment(app=app, service=service)
     except ProductionIngestConfigurationError:
         raise
     except Exception:
-        # Suppress provider exception context because SDK/driver/auth errors can contain tokens,
-        # endpoints, connection strings, or other details that must not enter startup logs.
         raise ProductionIngestStartupError(
             "TakeKeeper production ingestion could not start safely."
         ) from None
 
 
 def create_wsgi_app_from_env(environ: Mapping[str, str] | None = None) -> IngestHttpApp:
-    """WSGI-server factory for Cloud Run or self-hosted deployment."""
-
     return build_ingest_deployment_from_env(environ).app
 
 
-def _required(
-    env: Mapping[str, str],
-    name: str,
-    *,
-    max_length: int,
-) -> str:
+def _subject_map(env: Mapping[str, str], name: str) -> Mapping[str, str]:
+    raw = env.get(name)
+    if not isinstance(raw, str) or not raw or len(raw.encode("utf-8")) > MAX_SUBJECT_MAP_BYTES:
+        raise ProductionIngestConfigurationError(f"missing or invalid {name}")
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise ProductionIngestConfigurationError(f"missing or invalid {name}") from None
+    if not isinstance(decoded, dict) or not decoded or len(decoded) > MAX_SUBJECT_MAP_ENTRIES:
+        raise ProductionIngestConfigurationError(f"missing or invalid {name}")
+    normalized: dict[str, str] = {}
+    for subject, actor in decoded.items():
+        if not isinstance(subject, str) or not isinstance(actor, str):
+            raise ProductionIngestConfigurationError(f"missing or invalid {name}")
+        subject = subject.strip()
+        actor = actor.strip()
+        if (
+            not subject
+            or not actor
+            or len(subject) > 512
+            or len(actor) > 512
+            or any(ord(ch) < 32 for ch in subject + actor)
+        ):
+            raise ProductionIngestConfigurationError(f"missing or invalid {name}")
+        normalized[subject] = actor
+    return normalized
+
+
+def _required(env: Mapping[str, str], name: str, *, max_length: int) -> str:
     value = env.get(name)
     if value is None or not isinstance(value, str) or not value.strip():
         raise ProductionIngestConfigurationError(f"missing {name}")
@@ -269,13 +303,7 @@ def _required(
     return cleaned
 
 
-def _optional(
-    env: Mapping[str, str],
-    name: str,
-    default: str,
-    *,
-    max_length: int,
-) -> str:
+def _optional(env: Mapping[str, str], name: str, default: str, *, max_length: int) -> str:
     value = env.get(name, default)
     if not isinstance(value, str) or not value.strip():
         raise ProductionIngestConfigurationError(f"invalid {name}")
