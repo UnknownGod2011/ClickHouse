@@ -40,6 +40,7 @@ from .google_genai_transport import (
     GoogleGenAITransportError,
     create_google_genai_client,
 )
+from .ingest_api import IngestHttpApp
 from .ingest_runtime import (
     IngestBootstrapError,
     IngestedTake,
@@ -100,6 +101,7 @@ __all__ = [
     "InMemoryProductionMemory",
     "InMemoryReviewDecisionStore",
     "IngestBootstrapError",
+    "IngestHttpApp",
     "IngestedTake",
     "IngestNotReady",
     "IngestReadiness",
