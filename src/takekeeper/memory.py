@@ -8,6 +8,7 @@ from .models import Baseline, Finding, Observation
 
 class ProductionMemory(Protocol):
     def upsert_observations(self, observations: Iterable[Observation]) -> None: ...
+    def replace_observations(self, *, production_id: str, scene_id: str, take_id: str, observations: Iterable[Observation]) -> None: ...
     def list_observations(self, *, production_id: str, scene_id: str, take_id: str) -> list[Observation]: ...
     def upsert_baselines(self, baselines: Iterable[Baseline]) -> None: ...
     def list_baselines(self, *, production_id: str, scene_id: str) -> list[Baseline]: ...
@@ -27,6 +28,22 @@ class InMemoryProductionMemory:
         for observation in observations:
             key = (observation.production_id, observation.scene_id, observation.take_id, observation.entity_id, observation.property_key)
             self._observations[key] = observation
+
+    def replace_observations(
+        self,
+        *,
+        production_id: str,
+        scene_id: str,
+        take_id: str,
+        observations: Iterable[Observation],
+    ) -> None:
+        rows = list(observations)
+        scope = (production_id, scene_id, take_id)
+        for observation in rows:
+            if (observation.production_id, observation.scene_id, observation.take_id) != scope:
+                raise ValueError("observation scope does not match replacement scope")
+        self._observations = {key: value for key, value in self._observations.items() if key[:3] != scope}
+        self.upsert_observations(rows)
 
     def list_observations(self, *, production_id: str, scene_id: str, take_id: str) -> list[Observation]:
         scope = (production_id, scene_id, take_id)
